@@ -1,0 +1,171 @@
+name: Build and Package
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # ---- 安装平台特定依赖 ----
+      - name: Install WiX Toolset (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: choco install wixtoolset --no-progress -y
+
+      # ---- 克隆并构建 oracle-db-mcp-toolkit ----
+      - name: Checkout oracle/mcp (sparse)
+        uses: actions/checkout@v4
+        with:
+          repository: oracle/mcp
+          path: oracle-mcp-src
+          sparse-checkout: src/oracle-db-mcp-java-toolkit
+
+      - name: Build oracle-db-mcp-toolkit
+        shell: bash
+        run: |
+          set -e
+          cd oracle-mcp-src/src/oracle-db-mcp-java-toolkit
+          mvn clean package -DskipTests -q
+          ls -lh target/
+
+      # ---- 构建 mcp-tap ----
+      - name: Build mcp-tap
+        shell: bash
+        run: mvn package -DskipTests -q -pl mcp-tap
+
+      # ---- jlink MCP 精简运行时（供 MCP 服务器使用） ----
+      - name: jlink MCP runtime
+        shell: bash
+        run: |
+          set -e
+          TOOLKIT=oracle-mcp-src/src/oracle-db-mcp-java-toolkit/target/oracle-db-mcp-toolkit-1.0.0.jar
+          MODS=$(jdeps --ignore-missing-deps --print-module-deps "$TOOLKIT")
+          FULL="java.base,java.logging,java.xml,java.desktop,java.instrument,java.management,java.naming,java.net.http,java.rmi,java.sql,jdk.net,jdk.security.jgss"
+          # 合并去重
+          ALL=$(printf "%s,%s" "$FULL" "$MODS" | tr ',' '\n' | sort -u | tr '\n' ',' | sed 's/,$//')
+          echo "Modules: $ALL"
+          rm -rf dist/mcp-runtime
+          jlink --add-modules "$ALL" --output dist/mcp-runtime \
+            --strip-debug --no-header-files --no-man-pages --compress 2
+          du -sh dist/mcp-runtime
+          # 压缩
+          cd dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            powershell -Command "Compress-Archive -Path mcp-runtime -DestinationPath mcp-runtime.zip -Force"
+          else
+            zip -qr mcp-runtime.zip mcp-runtime
+          fi
+          cd ..
+
+      # ---- jlink 安装器自身运行时 ----
+      - name: jlink app runtime
+        shell: bash
+        run: |
+          rm -rf dist/app-runtime
+          jlink --add-modules java.base,java.desktop,java.logging,jdk.httpserver \
+            --output dist/app-runtime --strip-debug --no-header-files --no-man-pages --compress 2
+          du -sh dist/app-runtime
+
+      # ---- 资源内嵌 + 构建 setup-app ----
+      - name: Stage resources
+        shell: bash
+        run: |
+          export TOOLKIT_SRC="$(pwd)/oracle-mcp-src/src/oracle-db-mcp-java-toolkit/target/oracle-db-mcp-toolkit-1.0.0.jar"
+          chmod +x stage-resources.sh
+          ./stage-resources.sh
+
+      - name: Build setup-app (fat jar)
+        shell: bash
+        run: mvn package -DskipTests -q -pl setup-app
+
+      - name: Prepare jpackage staging
+        shell: bash
+        run: |
+          rm -rf dist/app-staging dist/pkg
+          mkdir -p dist/app-staging
+          cp setup-app/target/oracle-mcp-setup.jar dist/app-staging/
+
+      # ---- jpackage 平台特定打包 ----
+      - name: jpackage Windows exe
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          jpackage --type exe --name "Oracle MCP Setup" --app-version 0.1.0 \
+            --vendor oraclemcp --input dist/app-staging \
+            --main-jar oracle-mcp-setup.jar --main-class com.oraclemcp.setup.SetupMain \
+            --runtime-image dist/app-runtime --dest dist/pkg \
+            --win-menu --win-shortcut --win-menu-group "Oracle MCP Setup"
+
+      - name: jpackage macOS dmg
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          jpackage --type dmg --name "Oracle MCP Setup" --app-version 0.1.0 \
+            --vendor oraclemcp --input dist/app-staging \
+            --main-jar oracle-mcp-setup.jar --main-class com.oraclemcp.setup.SetupMain \
+            --runtime-image dist/app-runtime --dest dist/pkg
+
+      - name: jpackage Linux deb + app-image
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          jpackage --type deb --name "oracle-mcp-setup" --app-version 0.1.0 \
+            --vendor oraclemcp --input dist/app-staging \
+            --main-jar oracle-mcp-setup.jar --main-class com.oraclemcp.setup.SetupMain \
+            --runtime-image dist/app-runtime --dest dist/pkg \
+            --linux-menu-group "Development"
+          jpackage --type app-image --name "Oracle MCP Setup" --app-version 0.1.0 \
+            --vendor oraclemcp --input dist/app-staging \
+            --main-jar oracle-mcp-setup.jar --main-class com.oraclemcp.setup.SetupMain \
+            --runtime-image dist/app-runtime --dest dist/pkg
+
+      # ---- 上传构建产物 ----
+      - name: Upload Windows artifact
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Oracle-MCP-Setup-Windows
+          path: |
+            dist/pkg/**/*.exe
+          if-no-files-found: error
+
+      - name: Upload macOS artifact
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Oracle-MCP-Setup-macOS
+          path: |
+            dist/pkg/**/*.dmg
+          if-no-files-found: error
+
+      - name: Upload Linux artifacts
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Oracle-MCP-Setup-Linux
+          path: |
+            dist/pkg/**/*.deb
+            dist/pkg/**/Oracle MCP Setup/**
+          if-no-files-found: error

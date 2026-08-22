@@ -1,0 +1,67 @@
+{
+  "platforms": [
+    {
+      "id": "qoderwork",
+      "name": "QoderWork",
+      "format": "mcpServers-json",
+      "configLocation": "设置 → 连接器 → 自定义 MCP（文件：~/.qoderwork/mcp.json）",
+      "deeplink": "qoder-work://connectors",
+      "steps": [
+        "点击下方「打开配置页」进入 QoderWork 连接器设置",
+        "添加自定义 MCP 服务器（JSON 方式），粘贴右侧模板",
+        "保存后重启 QoderWork，或对该连接器执行关闭再开启"
+      ]
+    },
+    {
+      "id": "claude",
+      "name": "Claude Code",
+      "format": "claude-cli",
+      "configLocation": "命令行注册（用户级 ~/.claude.json）",
+      "steps": [
+        "在终端执行复制的命令（POSIX shell；Windows 请在 Git Bash/WSL 中执行）",
+        "执行 claude mcp list 确认 oracle-<env> 已注册"
+      ]
+    },
+    {
+      "id": "cursor",
+      "name": "Cursor",
+      "format": "mcpServers-json",
+      "configLocation": "Settings → MCP → Add new global MCP server（文件：~/.cursor/mcp.json）",
+      "steps": [
+        "打开 Cursor 设置页的 MCP 面板",
+        "编辑全局 MCP 配置，把模板中的 mcpServers 节点合并进去",
+        "保存后在 MCP 面板确认服务器状态为绿色"
+      ]
+    },
+    {
+      "id": "codex",
+      "name": "Codex CLI",
+      "format": "codex-toml",
+      "configLocation": "~/.codex/config.toml",
+      "steps": [
+        "把复制的 TOML 片段追加到 config.toml",
+        "重启 codex 会话生效"
+      ]
+    },
+    {
+      "id": "gemini",
+      "name": "Gemini CLI",
+      "format": "mcpServers-json",
+      "configLocation": "~/.gemini/settings.json（mcpServers 节点）",
+      "steps": [
+        "打开 settings.json，把模板中的服务器条目合并进 mcpServers",
+        "重启 gemini 会话，执行 /mcp 查看状态"
+      ]
+    },
+    {
+      "id": "other",
+      "name": "其他 MCP 客户端",
+      "format": "mcpServers-json",
+      "configLocation": "以对应客户端的 MCP 配置入口为准",
+      "steps": [
+        "粘贴通用 mcpServers JSON 模板到客户端的 MCP 配置",
+        "重启客户端后确认工具列表出现 read-query 等工具"
+      ]
+    }
+  ]
+}

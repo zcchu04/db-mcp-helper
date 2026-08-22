@@ -1,0 +1,29 @@
+# 构建中间产物（jlink 运行时、打包输入、产物）
+dist/
+*.bak-*
+
+# Maven 构建产物
+**/target/
+**/*.class
+
+# 内嵌的大体积二进制资源（CI 会重新生成，本地按需生成）
+setup-app/src/main/resources/toolkit/
+setup-app/src/main/resources/tap/
+setup-app/src/main/resources/runtime/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+.project
+.classpath
+.settings/
+
+# 系统垃圾
+.DS_Store
+Thumbs.db
+*.log
+
+# 测试残留
+*.tmp
+tapdbg.txt

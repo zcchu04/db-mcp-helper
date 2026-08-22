@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Oracle MCP 安装向导</title>
+<style>
+  :root { --pri:#2563eb; --pri-d:#1e40af; --ok:#16a34a; --err:#dc2626; --warn:#d97706; --bg:#f1f5f9; --card:#fff; --line:#e2e8f0; --tx:#0f172a; --tx2:#64748b; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:"Segoe UI","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--tx); min-height:100vh; }
+  header { background:#0f172a; color:#fff; padding:14px 28px; display:flex; align-items:center; gap:14px; }
+  header h1 { font-size:17px; font-weight:600; }
+  header .sub { font-size:12px; color:#94a3b8; }
+  main { max-width:960px; margin:24px auto; padding:0 20px 60px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:22px 24px; margin-bottom:18px; }
+  .card h2 { font-size:15px; margin-bottom:6px; }
+  .card .desc { font-size:12.5px; color:var(--tx2); margin-bottom:14px; line-height:1.6; }
+  label { display:block; font-size:13px; color:var(--tx2); margin:12px 0 5px; }
+  input[type=text], input[type=password], input[type=number] { width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:6px; font-size:13.5px; outline:none; }
+  textarea { width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:6px; font-size:12.5px; outline:none; font-family:Consolas,monospace; resize:vertical; }
+  input:focus, textarea:focus { border-color:var(--pri); }
+  .row { display:flex; gap:12px; }
+  .row > div { flex:1; }
+  button { background:var(--pri); color:#fff; border:none; border-radius:6px; padding:8px 18px; font-size:13.5px; cursor:pointer; }
+  button:hover { background:var(--pri-d); }
+  button:disabled { background:#94a3b8; cursor:not-allowed; }
+  button.ghost { background:#fff; color:var(--pri); border:1px solid var(--pri); }
+  button.danger { background:var(--err); }
+  button.small { padding:4px 10px; font-size:12px; }
+  .steps { display:flex; gap:6px; margin-bottom:18px; flex-wrap:wrap; }
+  .steps span { padding:5px 12px; border-radius:999px; font-size:12px; background:#e2e8f0; color:var(--tx2); }
+  .steps span.on { background:var(--pri); color:#fff; }
+  .steps span.done { background:#dcfce7; color:var(--ok); }
+  .result { margin-top:12px; padding:10px 12px; border-radius:6px; font-size:12.5px; display:none; line-height:1.7; word-break:break-all; }
+  .result.ok { display:block; background:#f0fdf4; border:1px solid #bbf7d0; color:#166534; }
+  .result.err { display:block; background:#fef2f2; border:1px solid #fecaca; color:#991b1b; }
+  .result.info { display:block; background:#eff6ff; border:1px solid #bfdbfe; color:#1e40af; }
+  pre { background:#0f172a; color:#e2e8f0; padding:12px; border-radius:6px; font-size:12px; overflow-x:auto; margin-top:8px; line-height:1.6; }
+  .chk { display:flex; align-items:center; gap:8px; margin:7px 0; font-size:13.5px; cursor:pointer; }
+  .chk input { width:15px; height:15px; }
+  .tag { display:inline-flex; align-items:center; gap:5px; background:#e0e7ff; color:#3730a3; padding:3px 9px; border-radius:999px; font-size:12px; margin:3px 4px 0 0; }
+  .tag b { cursor:pointer; font-weight:700; }
+  table { width:100%; border-collapse:collapse; font-size:13px; margin-top:10px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); }
+  th { color:var(--tx2); font-weight:500; font-size:12px; }
+  .badge { padding:2px 8px; border-radius:999px; font-size:11.5px; }
+  .badge.ok { background:#dcfce7; color:#166534; }
+  .badge.no { background:#fee2e2; color:#991b1b; }
+  .badge.warn { background:#fef3c7; color:#92400e; }
+  #toast { position:fixed; top:18px; right:18px; z-index:99; display:flex; flex-direction:column; gap:8px; }
+  #toast div { padding:10px 16px; border-radius:8px; color:#fff; font-size:13px; box-shadow:0 4px 14px rgba(0,0,0,.15); animation:fade .25s; }
+  @keyframes fade { from{opacity:0; transform:translateY(-6px)} to{opacity:1} }
+  .kv { font-size:13px; line-height:2; }
+  .kv b { color:var(--tx2); font-weight:500; margin-right:8px; }
+  details { margin-top:10px; font-size:13px; }
+  summary { cursor:pointer; color:var(--pri); font-size:13px; }
+  .hint { font-size:12px; color:var(--tx2); margin-top:6px; line-height:1.6; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Oracle MCP 安装向导</h1>
+  <span class="sub" id="hd-sub">加载中…</span>
+</header>
+<main id="app"></main>
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+let DET = null;            // detect 结果
+let CUR_ENV = null;        // 当前向导操作的环境编码
+const DEFAULT_ALIASES = {
+  local:["本地"], dev:["开发","development"], test:["测试","SIT"],
+  uat:["UAT","验收","用户测试"], preprod:["预发","准生产"], prod:["生产","线上","正式","PRD"]
+};
+const ENV_CODES = Object.keys(DEFAULT_ALIASES);
+
+// ---------- 基础工具 ----------
+async function api(path, body){
+  const r = await fetch(path, body ? {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)} : undefined);
+  const j = await r.json();
+  if(!j.ok) throw new Error(j.error || "请求失败");
+  return j.data;
+}
+function toast(msg, type){
+  const d = document.createElement("div");
+  d.textContent = msg;
+  d.style.background = type==="err" ? "var(--err)" : type==="warn" ? "var(--warn)" : "var(--ok)";
+  $("#toast").appendChild(d);
+  setTimeout(()=>d.remove(), 3500);
+}
+function setResult(id, ok, html){
+  const el = $(id);
+  el.className = "result " + (ok===null ? "info" : ok ? "ok" : "err");
+  el.innerHTML = html;
+}
+function esc(s){ return String(s??"").replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
+async function copyText(t){
+  try { await navigator.clipboard.writeText(t); toast("已复制到剪贴板"); }
+  catch(e){ const ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove(); toast("已复制到剪贴板"); }
+}
+function state(){ return DET && DET.state; }
+
+// ---------- 入口 ----------
+async function boot(){
+  try { DET = await api("/api/detect"); }
+  catch(e){ $("#app").innerHTML = "<div class='card'><h2>检测失败</h2><p>"+esc(e.message)+"</p></div>"; return; }
+  $("#hd-sub").textContent = "运行时根目录：" + DET.root;
+  render();
+}
+function render(){
+  if(state() && Object.keys(state().envs).length) renderConsole();
+  else renderWizard(1);
+}
+
+// ---------- 危险区（清空/卸载） ----------
+function dangerZone(){
+  return `<div class="card" style="border-color:#fecaca">
+  <h2 style="color:var(--err)">危险区</h2>
+  <p class="desc">一键清空：删除所有已写入的数据（运行时、全部环境配置与调用日志、mcp.json 中注册的连接器、已部署的 Skill），回到从未操作过的初始状态，<b>保留安装程序本身</b>。<br>一键卸载：先执行一键清空，再移除安装程序自身（均可在回收站找回）。</p>
+  <button class="danger" id="dz-reset">一键清空</button>
+  <button class="danger" id="dz-uninstall" style="margin-left:10px;background:#7f1d1d">一键卸载</button>
+  <div class="result" id="dz-r"></div>
+</div>`;
+}
+function bindDanger(){
+  const zr = $("#dz-reset"), zu = $("#dz-uninstall");
+  if(!zr) return;
+  zr.onclick = async () => {
+    if(!confirm("确认一键清空？\n\n将删除：运行时文件、全部环境配置与调用日志、mcp.json 中的 oracle-* 连接器、所有已部署的 Skill 副本。\n（全部移入回收站，可找回；安装程序保留）")) return;
+    zr.disabled = true; zr.textContent = "清空中…";
+    try {
+      const r = await api("/api/reset", {});
+      setResult("#dz-r", true, "已清空：" + r.mcpRemoved + " 个连接器条目 · " + (r.skillTrashed||[]).length + " 份 Skill · 根目录 " + esc(r.rootTrashed));
+      DET = await api("/api/detect");
+      setTimeout(render, 1200);
+    } catch(e){ setResult("#dz-r", false, esc(e.message)); zr.disabled=false; zr.textContent="一键清空"; }
+  };
+  zu.onclick = async () => {
+    if(!confirm("确认一键卸载？\n\n将清空全部数据（同「一键清空」），并移除安装程序自身。\n此操作后本向导将自动退出。")) return;
+    if(!confirm("再次确认：一键卸载将删除所有数据与安装程序（均移入回收站）。继续？")) return;
+    zu.disabled = true; zu.textContent = "卸载中…";
+    try {
+      const r = await api("/api/uninstall", {});
+      setResult("#dz-r", true, "卸载完成：" + esc(r.selfRemoved) + (r.shortcutRemoved ? " · 桌面快捷方式已移除" : "") + "<br>本向导即将退出。");
+    } catch(e){ setResult("#dz-r", false, esc(e.message)); zu.disabled=false; zu.textContent="一键卸载"; }
+  };
+}
+
+// ---------- 安装向导 ----------
+function renderWizard(step){
+  const steps = ["部署运行时","添加环境","连通自检","注册启用","部署 Skill","完成"];
+  let html = "<div class='steps'>" + steps.map((s,i)=>`<span class="${i+1===step?"on":i+1<step?"done":""}">${i+1}. ${s}</span>`).join("") + "</div>";
+  html += WIZ[step]();
+  html += dangerZone();
+  $("#app").innerHTML = html;
+  if(WIZ_BIND[step]) WIZ_BIND[step]();
+  bindDanger();
+}
+const WIZ = {}, WIZ_BIND = {};
+
+WIZ[1] = () => `
+<div class="card">
+  <h2>1. 部署运行时</h2>
+  <p class="desc">释放共享的 Oracle MCP Toolkit 与监听代理（tap）到安装根目录。多环境共享同一份运行时，每个环境仅独立一份连接配置。</p>
+  <label>安装根目录</label>
+  <input type="text" id="w1-root" value="${esc(state()?state().root:DET.root)}">
+  <div class="hint">当前 java：${esc(DET.javaCmd)}（M2 阶段使用本机 JVM，M3 将切换为安装包自带精简运行时）</div>
+  <div style="margin-top:16px"><button id="w1-btn">开始部署</button></div>
+  <div class="result" id="w1-r"></div>
+</div>`;
+WIZ_BIND[1] = () => { $("#w1-btn").onclick = async () => {
+  const b = $("#w1-btn"); b.disabled = true; b.textContent = "部署中…";
+  try {
+    await api("/api/deploy", {root: $("#w1-root").value.trim()});
+    DET = await api("/api/detect");
+    setResult("#w1-r", true, "运行时部署完成：" + esc(DET.root));
+    setTimeout(()=>renderWizard(2), 600);
+  } catch(e){ setResult("#w1-r", false, esc(e.message)); b.disabled=false; b.textContent="开始部署"; }
+};};
+
+WIZ[2] = () => `
+<div class="card">
+  <h2>2. 添加环境</h2>
+  <p class="desc">每个环境对应一个独立 MCP 连接器（oracle-&lt;编码&gt;），物理隔离、权限独立，可反复执行本步骤添加多个环境。</p>
+  <div class="row">
+    <div>
+      <label>环境编码（连接器名 = oracle-编码）</label>
+      <input type="text" id="w2-env" list="env-codes" placeholder="如 uat">
+      <datalist id="env-codes">${ENV_CODES.map(c=>`<option value="${c}">`).join("")}</datalist>
+    </div>
+    <div>
+      <label>环境别名（回车添加，供 AI 识别口语叫法）</label>
+      <input type="text" id="w2-alias-in" placeholder="如：生产、线上">
+      <div id="w2-aliases"></div>
+    </div>
+  </div>
+  <label>粘贴连接配置（可选，最快捷方式）</label>
+  <textarea id="w2-paste" rows="4" placeholder="支持 Spring YAML / properties 片段，只解析 url、username、password（含 jdbc-url、user 等变体及 spring.datasource.* 前缀键），其余键一律忽略。例如：
+url: jdbc:oracle:thin:@10.x.x.x:1521/SERVICE
+username: your_user
+password: ******"></textarea>
+  <div style="margin-top:8px"><button class="ghost small" id="w2-parsebtn">解析并回填</button> <span class="hint" id="w2-parse-hint"></span></div>
+  <div class="row">
+    <div><label>主机 host</label><input type="text" id="w2-host" placeholder="db.example.com 或 IP"></div>
+    <div style="max-width:110px"><label>端口</label><input type="number" id="w2-port" value="1521"></div>
+    <div><label>服务名 service</label><input type="text" id="w2-service" placeholder="如 SALESPORTALUAT"></div>
+  </div>
+  <div class="row">
+    <div><label>用户名</label><input type="text" id="w2-user"></div>
+    <div><label>密码</label><input type="password" id="w2-pass"><div class="hint" id="w2-pass-hint"></div></div>
+  </div>
+  <details>
+    <summary>高级：完整 JDBC URL（填写后覆盖 host/port/service）</summary>
+    <input type="text" id="w2-url" placeholder="jdbc:oracle:thin:@host:1521/service" style="margin-top:8px">
+  </details>
+  <label>权限勾选（映射到该环境注册的工具集 -Dtools）</label>
+  <div style="margin-bottom:6px">
+    <button class="ghost small" id="w2-pre-ro">只读预设</button>
+    <button class="ghost small" id="w2-pre-rw">读写预设</button>
+  </div>
+  <label class="chk"><input type="checkbox" id="t-read-query" checked disabled> read-query 查询（必选，引擎层仅允许 SELECT）</label>
+  <label class="chk"><input type="checkbox" id="t-db-ping" checked disabled> db-ping 连通检查（必选）</label>
+  <label class="chk"><input type="checkbox" id="t-table" checked> table 表结构探查</label>
+  <label class="chk"><input type="checkbox" id="t-explain-plan" checked> explain-plan 执行计划</label>
+  <label class="chk"><input type="checkbox" id="t-write-query"> <b style="color:var(--warn)">write-query 写操作（DML/DDL，高危，默认不勾）</b></label>
+  <div style="margin-top:16px"><button id="w2-btn">保存并自检</button></div>
+  <div class="result" id="w2-r"></div>
+</div>`;
+WIZ_BIND[2] = () => {
+  let aliases = [];
+  const renderTags = () => { $("#w2-aliases").innerHTML = aliases.map((a,i)=>`<span class="tag">${esc(a)}<b data-i="${i}">×</b></span>`).join("");
+    document.querySelectorAll("#w2-aliases b").forEach(b=>b.onclick=()=>{ aliases.splice(+b.dataset.i,1); renderTags(); }); };
+  $("#w2-env").onchange = () => { const v = $("#w2-env").value.trim(); if(DEFAULT_ALIASES[v]){ aliases = [...DEFAULT_ALIASES[v]]; renderTags(); } };
+  $("#w2-alias-in").onkeydown = e => { if(e.key==="Enter"){ e.preventDefault(); const v = e.target.value.trim(); if(v && !aliases.includes(v)) aliases.push(v); e.target.value=""; renderTags(); } };
+  const setTools = rw => { $("#t-table").checked=true; $("#t-explain-plan").checked=true; $("#t-write-query").checked=rw; };
+  $("#w2-pre-ro").onclick = ()=>setTools(false);
+  $("#w2-pre-rw").onclick = ()=>setTools(true);
+  $("#w2-parsebtn").onclick = async () => {
+    const text = $("#w2-paste").value;
+    if(!text.trim()){ toast("请先粘贴配置内容","warn"); return; }
+    try {
+      const r = await api("/api/env/parse", {text});
+      if(!r.parseable){ $("#w2-parse-hint").textContent = "未解析到 url / username / password，请检查格式"; return; }
+      const filled = [];
+      if(r.host){ $("#w2-host").value = r.host; $("#w2-port").value = r.port; $("#w2-service").value = r.service; filled.push("host / 端口 / 服务名"); }
+      else if(r.jdbcUrl){ $("#w2-url").value = r.jdbcUrl; filled.push("完整 JDBC URL（高级）"); }
+      if(r.user){ $("#w2-user").value = r.user; filled.push("用户名"); }
+      if(r.hasPassword){ $("#w2-pass-hint").textContent = "已从粘贴内容解析到密码（不回显），保存时若此处留空将按粘贴值写入"; filled.push("密码"); }
+      $("#w2-parse-hint").textContent = "已回填：" + filled.join("、");
+    } catch(e){ toast(e.message, "err"); }
+  };
+  $("#t-write-query").onchange = e => { if(e.target.checked && !confirm("确认开启写操作权限？\n\n该环境将注册 write-query 工具（DML/DDL）。建议仅对开发/测试类环境开启。")) e.target.checked = false; };
+  $("#w2-btn").onclick = async () => {
+    const env = $("#w2-env").value.trim();
+    const tools = ["read-query","db-ping",...["table","explain-plan","write-query"].filter(t=>$("#t-"+t).checked)];
+    const body = { env, aliases, tools, host:$("#w2-host").value.trim(), port:$("#w2-port").value, service:$("#w2-service").value.trim(), user:$("#w2-user").value.trim(), password:$("#w2-pass").value, jdbcUrl:$("#w2-url").value.trim(), paste:$("#w2-paste").value };
+    const b = $("#w2-btn"); b.disabled=true; b.textContent="保存中…";
+    try {
+      const c = await api("/api/env/config", body);
+      CUR_ENV = env;
+      setResult("#w2-r", null, "配置已写入 " + esc(c.configPath) + "，开始自检…");
+      const t = await api("/api/env/test", {env});
+      if(t.ok){
+        setResult("#w2-r", true, "自检通过：" + esc(t.detail)
+          + "<br>版本 " + esc(t.fields.dbVersion||"?") + " · 库 " + esc(t.fields.dbName||"?") + " · 用户 " + esc(t.fields.user||"?")
+          + " · 建连 " + esc(t.fields.connectLatencyMs||"?") + "ms"
+          + "<br><span style='font-size:12px;color:#64748b'>本次自检调用已被 tap 记入调用日志</span>");
+        setTimeout(()=>renderWizard(4), 900);
+      } else {
+        setResult("#w2-r", false, "自检失败：" + esc(t.detail) + (t.stderrTail?"<pre>"+esc(t.stderrTail)+"</pre>":""));
+        b.disabled=false; b.textContent="保存并自检";
+      }
+    } catch(e){ setResult("#w2-r", false, esc(e.message)); b.disabled=false; b.textContent="保存并自检"; }
+  };
+};
+
+WIZ[3] = () => "";   // 自检已并入步骤 2，保留占位
+WIZ_BIND[3] = () => {};
+
+WIZ[4] = () => `
+<div class="card">
+  <h2>3. 注册到 QoderWork 并启用</h2>
+  <p class="desc">将环境 <b>${esc(CUR_ENV)}</b> 以连接器名 <b>oracle-${esc(CUR_ENV)}</b> 合并写入 ${esc(DET.mcpJsonPath)}（写前自动备份）。注册链路为 tap 监听代理包裹 Toolkit，与自检链路一致。</p>
+  <button id="w4-btn">注册并启用</button>
+  <div class="result" id="w4-r"></div>
+</div>`;
+WIZ_BIND[4] = () => { $("#w4-btn").onclick = async () => {
+  const b = $("#w4-btn"); b.disabled=true; b.textContent="注册中…";
+  try {
+    const r = await api("/api/env/register", {env: CUR_ENV});
+    DET = await api("/api/detect");
+    setResult("#w4-r", true, "已写入 " + esc(r.serverName) + " 到 " + esc(r.mcpJsonPath)
+      + "<br><b>请重启 QoderWork 使连接器生效</b>（或在连接器设置页对 oracle-" + esc(CUR_ENV) + " 执行关闭再开启）"
+      + "<pre>" + esc(JSON.stringify(r.entry, null, 2)) + "</pre>");
+    setTimeout(()=>renderWizard(5), 1200);
+  } catch(e){ setResult("#w4-r", false, esc(e.message)); b.disabled=false; b.textContent="注册并启用"; }
+};};
+
+WIZ[5] = () => {
+  const h = DET.home.replace(/\\/g,"/");
+  const tg = [
+    ["QoderWork（装完即用，推荐勾选）", h+"/.qoderwork/skills", true],
+    ["跨 agent 共享（Cursor/Gemini 等识别）", h+"/.agents/skills", true],
+    ["Claude Code", h+"/.claude/skills", false],
+    ["Codex CLI", h+"/.codex/skills", false],
+    ["Gemini CLI", h+"/.gemini/skills", false],
+    ["Cursor", h+"/.cursor/skills", false]
+  ];
+  return `<div class="card">
+  <h2>4. 部署 Skill（oracle-db-ops）</h2>
+  <p class="desc">写入静态正文 SKILL.md + 按当前环境清单生成 environments.md 映射表。多选即部署多份副本；后续增删环境会自动同步全部副本。</p>
+  ${tg.map((t,i)=>`<label class="chk"><input type="checkbox" class="w5-t" data-v="${esc(t[1])}" ${t[2]?"checked":""}> ${esc(t[0])}<span class="hint" style="margin:0 0 0 6px">${esc(t[1])}</span></label>`).join("")}
+  <label>自定义目录（可选）</label>
+  <input type="text" id="w5-custom" placeholder="任意 agent 的技能根目录">
+  <div style="margin-top:16px"><button id="w5-btn">部署 Skill</button></div>
+  <div class="result" id="w5-r"></div>
+</div>`; };
+WIZ_BIND[5] = () => { $("#w5-btn").onclick = async () => {
+  const targets = [...document.querySelectorAll(".w5-t:checked")].map(x=>x.dataset.v);
+  const c = $("#w5-custom").value.trim(); if(c) targets.push(c);
+  if(!targets.length){ toast("请至少选择一个部署目录","warn"); return; }
+  const b = $("#w5-btn"); b.disabled=true; b.textContent="部署中…";
+  try {
+    const r = await api("/api/skill/deploy", {targets});
+    setResult("#w5-r", true, "已部署 " + r.deployed.length + " 份：<br>" + r.deployed.map(d=>"• "+esc(d)).join("<br>"));
+    setTimeout(()=>renderWizard(6), 900);
+  } catch(e){ setResult("#w5-r", false, esc(e.message)); b.disabled=false; b.textContent="部署 Skill"; }
+};};
+
+WIZ[6] = () => `
+<div class="card">
+  <h2>5. 完成</h2>
+  <p class="desc">全部就绪。重启 QoderWork 后即可对 AI 说「在 ${esc(CUR_ENV||"已配置环境")} 查一下 xxx 表结构」验证。</p>
+  <div class="kv"><b>运行时根目录</b>${esc(DET.root)}</div>
+  <div class="kv"><b>MCP 配置文件</b>${esc(DET.mcpJsonPath)}</div>
+  <div style="margin-top:16px"><button id="w6-btn">进入管理台</button></div>
+</div>`;
+WIZ_BIND[6] = () => { $("#w6-btn").onclick = ()=>renderConsole(); };
+
+// ---------- 管理台 ----------
+async function renderConsole(){
+  DET = await api("/api/detect");
+  const st = state() || {envs:{}, skillTargets:[]};
+  const rows = Object.entries(st.envs||{}).map(([code,info])=>{
+    const reg = (DET.registeredServers||[]).includes("oracle-"+code);
+    const lt = info.lastTest;
+    return `<tr>
+      <td><b>${esc(code)}</b><div class="hint">${esc((info.aliases||[]).join("、")||"无别名")}</div></td>
+      <td>${info.tools.includes("write-query")?'<span class="badge warn">读写</span>':'<span class="badge ok">只读</span>'}</td>
+      <td>${reg?'<span class="badge ok">已注册</span>':'<span class="badge no">未注册</span>'}</td>
+      <td>${lt?(lt.ok?'<span class="badge ok">正常</span> ':'<span class="badge no">异常</span> ')+'<span class="hint">'+esc(lt.ts||"")+"</span>":'<span class="hint">未自检</span>'}</td>
+      <td>
+        <button class="ghost small" data-act="test" data-env="${esc(code)}">自检</button>
+        <button class="ghost small" data-act="log" data-env="${esc(code)}">调用日志</button>
+        <button class="ghost small" data-act="guide" data-env="${esc(code)}">接入指南</button>
+        <button class="ghost small" data-act="reg" data-env="${esc(code)}">${reg?"重新注册":"注册"}</button>
+        <button class="danger small" data-act="del" data-env="${esc(code)}">删除</button>
+      </td></tr>`;
+  }).join("");
+  $("#app").innerHTML = `
+  <div class="card">
+    <h2>环境管理</h2>
+    <p class="desc">每个环境对应一个独立 MCP 连接器，增删互不影响。删除操作会把环境配置移入系统回收站并同步清理映射表。</p>
+    <table><thead><tr><th>环境</th><th>权限</th><th>注册</th><th>最近自检</th><th>操作</th></tr></thead><tbody>${rows||'<tr><td colspan="5" class="hint">暂无环境</td></tr>'}</tbody></table>
+    <div style="margin-top:16px; display:flex; gap:10px">
+      <button id="c-add">添加环境</button>
+      <button class="ghost" id="c-sync">同步 Skill 映射（${(st.skillTargets||[]).length} 个已部署目录）</button>
+    </div>
+    <div class="result" id="c-r"></div>
+  </div>
+  <div class="card">
+    <h2>运行信息</h2>
+    <div class="kv"><b>运行时根目录</b>${esc(DET.root)}</div>
+    <div class="kv"><b>java</b>${esc(DET.javaCmd)}</div>
+    <div class="kv"><b>mcp.json</b>${esc(DET.mcpJsonPath)}（当前 oracle-* 条目：${esc((DET.registeredServers||[]).join(", ")||"无")}）</div>
+  </div>
+  ${dangerZone()}`;
+  $("#c-add").onclick = ()=>renderWizard(2);
+  $("#c-sync").onclick = async () => {
+    try { const r = await api("/api/skill/sync", {}); setResult("#c-r", true, "已同步 " + r.updated.length + " 份映射：<br>"+r.updated.map(d=>"• "+esc(d)).join("<br>")); }
+    catch(e){ setResult("#c-r", false, esc(e.message)); }
+  };
+  document.querySelectorAll("[data-act]").forEach(b=>b.onclick = async ()=>{
+    const env = b.dataset.env, act = b.dataset.act;
+    try {
+      if(act==="test"){
+        toast("自检 "+env+" 中…","warn");
+        const t = await api("/api/env/test",{env});
+        t.ok ? toast(env+" 自检通过："+t.detail) : toast(env+" 自检失败："+t.detail,"err");
+        renderConsole();
+      } else if(act==="reg"){
+        const r = await api("/api/env/register",{env});
+        setResult("#c-r", true, "已注册 "+esc(r.serverName)+"，请重启 QoderWork 或对该连接器 disable→enable 生效");
+      } else if(act==="log"){
+        const r = await api("/api/env/log?env="+encodeURIComponent(env)+"&limit=100");
+        let body = "";
+        for(const line of r.lines){
+          try { const j = JSON.parse(line);
+            body += `${j.ts.replace("T"," ").substring(0,19)}  ${j.tool.padEnd(14)} ${String(j.durMs).padStart(6)}ms  ${j.error?"✗ 错误":"✓"}  ${j.sql?esc(j.sql):""}\n`;
+          } catch(e){ body += line+"\n"; }
+        }
+        $("#app").innerHTML = `<div class="card"><h2>调用日志 — ${esc(env)}</h2>
+          <p class="desc">来源：${esc(r.logPath)}（最新在前，最多 100 条）。由 tap 监听代理旁路记录，协议流本身不受影响。</p>
+          <pre>${body||"（暂无调用记录）"}</pre>
+          <div style="margin-top:14px"><button class="ghost" id="lg-back">返回管理台</button></div></div>`;
+        $("#lg-back").onclick = renderConsole;
+      } else if(act==="guide"){
+        renderGuide(env);
+      } else if(act==="del"){
+        if(!confirm("删除环境 "+env+"？\n将移除 mcp.json 中的 oracle-"+env+" 条目，环境配置目录移入回收站，并同步更新 Skill 映射。")) return;
+        const r = await api("/api/env/delete",{env});
+        toast("已删除 "+env+"（"+r.trash+"）");
+        renderConsole();
+      }
+    } catch(e){ toast(e.message,"err"); }
+  });
+  bindDanger();
+}
+
+// ---------- 接入指南 ----------
+async function renderGuide(env){
+  let r;
+  try { r = await api("/api/env/guide?env="+encodeURIComponent(env)); }
+  catch(e){ toast(e.message,"err"); return; }
+  let cur = 0;
+  const chips = () => r.platforms.map((p,i)=>`<button class="${i===cur?"":"ghost"} small" data-pi="${i}" style="margin:0 6px 6px 0">${esc(p.name)}</button>`).join("");
+  const detail = () => {
+    const p = r.platforms[cur];
+    $("#gd-detail").innerHTML = `
+      <div class="kv"><b>配置位置</b>${esc(p.configLocation)}</div>
+      <div style="margin:10px 0">
+        <button class="small" id="gd-copy">复制配置模板</button>
+        ${p.deeplink?`<button class="ghost small" id="gd-open" style="margin-left:8px">打开配置页</button>`:""}
+      </div>
+      <pre id="gd-tpl">${esc(p.template)}</pre>
+      <div class="hint" style="margin-top:10px;line-height:2">操作步骤：<br>${p.steps.map((s,i)=>(i+1)+". "+esc(s)).join("<br>")}</div>`;
+    $("#gd-copy").onclick = ()=>copyText(p.template);
+    if(p.deeplink) $("#gd-open").onclick = ()=>{ location.href = p.deeplink; };
+  };
+  $("#app").innerHTML = `<div class="card"><h2>接入指南 — ${esc(env)}</h2>
+    <p class="desc">选择你的 AI 平台，复制已预填该环境注册命令的配置模板。连接器名：<b>${esc(r.serverName)}</b>。QoderWork 本机已由安装器自动写入 mcp.json，其他平台按下述方式接入。</p>
+    <div id="gd-chips">${chips()}</div>
+    <div id="gd-detail"></div>
+    <div style="margin-top:16px"><button class="ghost" id="gd-back">返回管理台</button></div></div>`;
+  detail();
+  $("#gd-chips").onclick = e => { const b = e.target.closest("[data-pi]"); if(!b) return; cur = +b.dataset.pi; $("#gd-chips").innerHTML = chips(); detail(); };
+  $("#gd-back").onclick = renderConsole;
+}
+
+boot();
+</script>
+</body>
+</html>
