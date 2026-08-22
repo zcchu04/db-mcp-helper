@@ -185,7 +185,7 @@ jobs:
           path: artifacts
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v1
         with:
           name: Oracle MCP Setup ${{ github.ref_name }}
           body: |
@@ -211,9 +211,9 @@ jobs:
             4. 自检连通性
             5. 注册到 AI 平台（QoderWork / Claude Code / Cursor 等）
           files: |
-            artifacts/Oracle-MCP-Setup-Windows/**/*
-            artifacts/Oracle-MCP-Setup-macOS/**/*
-            artifacts/Oracle-MCP-Setup-Linux/**/*
+            artifacts/Oracle-MCP-Setup-Windows/*
+            artifacts/Oracle-MCP-Setup-macOS/*
+            artifacts/Oracle-MCP-Setup-Linux/*
           draft: false
           prerelease: false
         env:
