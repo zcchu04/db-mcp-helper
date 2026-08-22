@@ -188,7 +188,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p release-files
-          find artifacts -type f -exec cp {} release-files/ \;
+          # 只复制安装包文件，排除 app-image 内部文件
+          find artifacts -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.deb" \) -exec cp {} release-files/ \;
           ls -lh release-files/
 
       - name: Create Release
