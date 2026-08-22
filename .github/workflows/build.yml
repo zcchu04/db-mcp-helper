@@ -184,6 +184,13 @@ jobs:
         with:
           path: artifacts
 
+      - name: Flatten artifacts
+        shell: bash
+        run: |
+          mkdir -p release-files
+          find artifacts -type f -exec cp {} release-files/ \;
+          ls -lh release-files/
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
@@ -193,9 +200,9 @@ jobs:
 
             三平台安装包：
 
-            - **Windows**: `Oracle-MCP-Setup-Windows/Oracle MCP Setup.exe`
-            - **macOS**: `Oracle-MCP-Setup-macOS/Oracle MCP Setup.dmg`
-            - **Linux**: `Oracle-MCP-Setup-Linux/oracle-mcp-setup_1.0.0-1_amd64.deb` + app-image
+            - **Windows**: `Oracle MCP Setup.exe`
+            - **macOS**: `Oracle MCP Setup.dmg`
+            - **Linux**: `oracle-mcp-setup_1.0.0-1_amd64.deb` + app-image
 
             ### 安装说明
 
@@ -211,9 +218,7 @@ jobs:
             4. 自检连通性
             5. 注册到 AI 平台（QoderWork / Claude Code / Cursor 等）
           files: |
-            artifacts/Oracle-MCP-Setup-Windows/*
-            artifacts/Oracle-MCP-Setup-macOS/*
-            artifacts/Oracle-MCP-Setup-Linux/*
+            release-files/*
           draft: false
           prerelease: false
         env:
