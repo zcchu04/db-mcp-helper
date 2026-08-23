@@ -38,6 +38,7 @@ function Test-Java17 {
 
 function Get-InnoSetupPath {
     $candidates = @(
+        "$env:USERPROFILE\.qoderwork\tools\innosetup6",
         "C:\Program Files (x86)\Inno Setup 6",
         "C:\Program Files\Inno Setup 6",
         "C:\Inno Setup 6"
@@ -211,6 +212,9 @@ Test-Java17
 if ($Type -eq "exe") {
     $inno = Get-InnoSetupPath
     $env:PATH = "$inno;$env:PATH"
+    # jpackage exe also requires WiX
+    $wix = Get-WixPath
+    $env:PATH = "$wix;$env:PATH"
 } elseif ($Type -eq "msi") {
     $wix = Get-WixPath
     $env:PATH = "$wix;$env:PATH"
