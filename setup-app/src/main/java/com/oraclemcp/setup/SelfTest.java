@@ -61,20 +61,25 @@ public final class SelfTest {
             String java = Installer.resolveJava(root);
             log.println("java:    " + java + " exists=" + Files.isRegularFile(Path.of(java)));
 
-            // 用引号包裹含空格的路径，确保 JVM -D 参数正确解析
-            String cfgPath = cfg.toString();
-            String tapPath = tap.toString();
-            String toolkitPath = toolkit.toString();
-            String logPath = Installer.callLog(root, env).toString();
+            // 策略：设置工作目录为安装目录，所有路径参数改用相对路径，彻底避免空格问题
+            String javaRel = Path.of(java).getFileName().toString(); // java.exe
+            String tapRel = root.relativize(tap).toString();
+            String toolkitRel = root.relativize(toolkit).toString();
+            String cfgRel = root.relativize(cfg).toString();
+            String logRel = root.relativize(Installer.callLog(root, env)).toString();
 
             List<String> cmd = List.of(
-                    java, "-jar", tapPath, "--log", logPath, "--",
-                    java, "-DconfigFile=" + cfgPath, "-Dtools=db-ping", "-jar", toolkitPath);
-            log.println("CMD: " + String.join(" ", cmd));
+                    javaRel, "-jar", tapRel, "--log", logRel, "--",
+                    javaRel, "-DconfigFile=" + cfgRel, "-Dtools=db-ping", "-jar", toolkitRel);
+            log.println("CMD (relative): " + String.join(" ", cmd));
+            log.println("workDir: " + root);
 
             Process p = null;
             try {
-                final Process proc = new ProcessBuilder(cmd).redirectErrorStream(false).start();
+                final Process proc = new ProcessBuilder(cmd)
+                        .directory(root.toFile())
+                        .redirectErrorStream(false)
+                        .start();
                 p = proc;
                 log.println("子进程已启动, PID=" + proc.pid());
 
