@@ -33,24 +33,85 @@ public final class SetupMain {
     /** 服务实例引用，卸载流程需要主动停机。 */
     private static HttpServer serverRef;
 
-    public static void main(String[] args) throws IOException {
-        int port = Cfg.port();
-        String url = "http://127.0.0.1:" + port;
+    public static void main(String[] args) {
+        // 初始化日志（写入安装目录下的 logs/ 目录）
+        Path logDir = resolveLogDir();
+        java.io.PrintStream log = openLog(logDir);
+        log.println("=== Oracle MCP Setup 启动日志 ===");
+        log.println("时间: " + java.time.Instant.now());
+        log.println("Java 版本: " + System.getProperty("java.version"));
+        log.println("Java 主目录: " + System.getProperty("java.home"));
+        log.println("工作目录: " + System.getProperty("user.dir"));
+        log.println("用户主目录: " + System.getProperty("user.home"));
+        log.println("os.name: " + System.getProperty("os.name"));
+        log.println("os.arch: " + System.getProperty("os.arch"));
+        log.println("jpackage.app-path: " + System.getProperty("jpackage.app-path", "(未设置)"));
+        log.println("命令行参数: " + java.util.Arrays.toString(args));
+        log.println();
 
-        // 检测是否已有 Oracle MCP Setup 实例在运行（通过探测 /api/detect 接口）
-        if (isOurServerRunning(port)) {
-            System.out.println("检测到 Oracle MCP Setup 已在运行，直接打开浏览器...");
+        try {
+            int port = Cfg.port();
+            String url = "http://127.0.0.1:" + port;
+            log.println("目标端口: " + port);
+            log.println("目标 URL: " + url);
+
+            // 检测是否已有 Oracle MCP Setup 实例在运行（通过探测 /api/detect 接口）
+            log.println("检测已有实例...");
+            if (isOurServerRunning(port)) {
+                log.println("检测到 Oracle MCP Setup 已在运行，直接打开浏览器...");
+                openBrowser(url);
+                log.println("浏览器已打开，退出。");
+                return;
+            }
+            log.println("未检测到已有实例，准备启动 HTTP 服务器...");
+
+            // 启动新实例
+            HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
+            server.createContext("/", SetupMain::handle);
+            server.start();
+            serverRef = server;
+            log.println("HTTP 服务器已启动，监听 " + url);
+            System.out.println("Oracle MCP Setup 已启动：" + url);
             openBrowser(url);
-            return;
+            log.println("浏览器已打开。");
+        } catch (Throwable t) {
+            log.println("!!! 启动失败 !!!");
+            log.println("异常类型: " + t.getClass().getName());
+            log.println("异常消息: " + t.getMessage());
+            t.printStackTrace(log);
+            // 同时输出到 stderr，jpackage 启动器会捕获 stderr
+            t.printStackTrace(System.err);
+        } finally {
+            log.println("=== 日志结束 ===");
+            log.flush();
+            log.close();
         }
+    }
 
-        // 启动新实例
-        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
-        server.createContext("/", SetupMain::handle);
-        server.start();
-        serverRef = server;
-        System.out.println("Oracle MCP Setup 已启动：" + url);
-        openBrowser(url);
+    /** 定位日志目录：优先使用安装目录，其次使用用户主目录 */
+    private static Path resolveLogDir() {
+        // jpackage 形态：jpackage.app-path 指向 exe 所在目录
+        String appPath = System.getProperty("jpackage.app-path");
+        if (appPath != null && !appPath.isBlank()) {
+            return Path.of(appPath).resolve("logs");
+        }
+        // 开发形态：使用用户主目录
+        return Path.of(System.getProperty("user.home"), ".oracle-mcp-helper", "logs");
+    }
+
+    /** 打开日志文件（按日期命名，追加模式） */
+    private static java.io.PrintStream openLog(Path logDir) {
+        try {
+            Files.createDirectories(logDir);
+            String date = java.time.LocalDate.now().toString();
+            Path logFile = logDir.resolve("setup-" + date + ".log");
+            return new java.io.PrintStream(
+                new java.io.FileOutputStream(logFile.toFile(), true), true, "UTF-8");
+        } catch (Exception e) {
+            // 日志文件打开失败，降级到 stderr
+            System.err.println("无法打开日志文件: " + e.getMessage());
+            return System.err;
+        }
     }
 
     /** 检测指定端口是否已有我们的服务在运行（通过请求 /api/detect 验证） */
