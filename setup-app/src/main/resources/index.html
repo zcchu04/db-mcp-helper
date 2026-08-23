@@ -345,7 +345,10 @@ WIZ_BIND[2] = () => {
       const c = await api("/api/env/config", body);
       CUR_ENV = env;
       setResult("#w2-r", null, "配置已写入 " + esc(c.configPath) + "，开始自检…");
-      const t = await api("/api/env/test", {env});
+      // 触发自检（异步），然后轮询结果
+      await api("/api/env/test", {env});
+      const t = await pollTestResult(env, b);
+      if(!t) return; // 用户取消或超时
       if(t.ok){
         setResult("#w2-r", true, "自检通过：" + esc(t.detail)
           + "<br>版本 " + esc(t.fields.dbVersion||"?") + " · 库 " + esc(t.fields.dbName||"?") + " · 用户 " + esc(t.fields.user||"?")
@@ -359,6 +362,19 @@ WIZ_BIND[2] = () => {
     } catch(e){ setResult("#w2-r", false, esc(e.message)); b.disabled=false; b.textContent="保存并自检"; }
   };
 };
+
+/** 轮询自检结果，最多等待 100 秒 */
+async function pollTestResult(env, btn) {
+  const maxWait = 100000, interval = 1000;
+  const start = Date.now();
+  while (Date.now() - start < maxWait) {
+    await new Promise(r => setTimeout(r, interval));
+    const r = await api("/api/env/test/poll?env=" + encodeURIComponent(env));
+    if (!r.running) return r;
+    if (btn) { btn.textContent = "自检中… (" + Math.floor((Date.now()-start)/1000) + "s)"; }
+  }
+  return { ok:false, detail:"自检超时（100秒无响应）" };
+}
 
 WIZ[3] = () => "";   // 自检已并入步骤 2，保留占位
 WIZ_BIND[3] = () => {};
@@ -503,8 +519,10 @@ async function renderConsole(){
     const env = b.dataset.env, act = b.dataset.act;
     try {
       if(act==="test"){
-        toast("自检 "+env+" 中…","warn");
-        const t = await api("/api/env/test",{env});
+        toast("自检 "+env+" 已启动，请稍候…","warn");
+        await api("/api/env/test",{env});
+        // 轮询结果
+        const t = await pollTestResult(env, null);
         t.ok ? toast(env+" 自检通过："+t.detail) : toast(env+" 自检失败："+t.detail,"err");
         renderConsole();
       } else if(act==="reg"){

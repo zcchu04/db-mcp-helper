@@ -32,6 +32,11 @@ public final class SetupMain {
     private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
     /** 服务实例引用，卸载流程需要主动停机。 */
     private static HttpServer serverRef;
+    /** 异步自检结果缓存：env → 最近一次结果（running/完成） */
+    private static final java.util.concurrent.ConcurrentHashMap<String, SelfTest.Result> TEST_RESULTS = new java.util.concurrent.ConcurrentHashMap<>();
+    /** 标记正在运行中的自检 */
+    private static final SelfTest.Result RUNNING_MARKER = new SelfTest.Result();
+    static { RUNNING_MARKER.detail = "running"; }
 
     public static void main(String[] args) {
         // 初始化日志（写入安装目录下的 logs/ 目录）
@@ -165,6 +170,8 @@ public final class SetupMain {
                 return ok(envParse(body));
             case "/api/env/test":
                 return ok(envTest(body));
+            case "/api/env/test/poll":
+                return ok(envTestPoll(query(uri, "env")));
             case "/api/env/register":
                 return ok(envRegister(body));
             case "/api/env/delete":
@@ -342,27 +349,60 @@ public final class SetupMain {
         return d;
     }
 
-    // ---------- env test ----------
+    // ---------- env test（异步） ----------
 
-    private static JsonObject envTest(JsonObject body) throws IOException {
+    /** 触发自检：立即返回 running 状态，实际测试在后台线程执行。 */
+    private static JsonObject envTest(JsonObject body) {
         Path root = requireRoot();
         String env = str(body, "env");
-        SelfTest.Result r = SelfTest.run(root, env);
-        State st = State.load(root);
-        if (st != null && st.envs.containsKey(env)) {
-            State.LastTest lt = new State.LastTest();
-            lt.ok = r.ok;
-            lt.detail = r.detail;
-            lt.ts = Instant.now().toString();
-            st.envs.get(env).lastTest = lt;
-            st.save(root);
+        if (env == null || env.isBlank()) {
+            return err("env 参数不能为空");
         }
+        // 标记为运行中
+        TEST_RESULTS.put(env, RUNNING_MARKER);
+        // 后台线程执行自检
+        new Thread(() -> {
+            SelfTest.Result r = SelfTest.run(root, env);
+            TEST_RESULTS.put(env, r);
+            // 持久化到 state
+            try {
+                State st = State.load(root);
+                if (st != null && st.envs.containsKey(env)) {
+                    State.LastTest lt = new State.LastTest();
+                    lt.ok = r.ok;
+                    lt.detail = r.detail;
+                    lt.ts = Instant.now().toString();
+                    st.envs.get(env).lastTest = lt;
+                    st.save(root);
+                }
+            } catch (Exception ignored) {
+            }
+        }, "selftest-" + env).start();
         JsonObject d = new JsonObject();
-        d.addProperty("ok", r.ok);
-        d.addProperty("detail", r.detail);
-        d.add("fields", r.fields);
-        if (r.stderrTail != null && !r.stderrTail.isBlank()) {
-            d.addProperty("stderrTail", r.stderrTail);
+        d.addProperty("ok", false);
+        d.addProperty("detail", "自检已启动，请稍后刷新查看结果");
+        d.addProperty("running", true);
+        return d;
+    }
+
+    /** 轮询自检结果。 */
+    private static JsonObject envTestPoll(String env) {
+        SelfTest.Result r = TEST_RESULTS.get(env);
+        JsonObject d = new JsonObject();
+        if (r == null) {
+            d.addProperty("ok", false);
+            d.addProperty("detail", "尚未执行自检");
+        } else if (r == RUNNING_MARKER) {
+            d.addProperty("ok", false);
+            d.addProperty("detail", "自检进行中...");
+            d.addProperty("running", true);
+        } else {
+            d.addProperty("ok", r.ok);
+            d.addProperty("detail", r.detail);
+            d.add("fields", r.fields);
+            if (r.stderrTail != null && !r.stderrTail.isBlank()) {
+                d.addProperty("stderrTail", r.stderrTail);
+            }
         }
         return d;
     }
