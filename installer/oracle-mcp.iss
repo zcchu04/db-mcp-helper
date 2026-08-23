@@ -50,6 +50,7 @@ UninstallDisplayIcon={app}\{#AppName}.exe
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+DisableDirPage=no
 DisableProgramGroupPage=no
 ; 中文（简体）语言选择
 LanguageDetectionMethod=uilanguage
@@ -74,6 +75,29 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Filename: "{app}\{#AppName}.exe"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
 
 [Code]
+// ── 安装前自动关闭运行中的进程 ──────────────────────────────────────
+// PrepareToInstall 在文件复制前调用，返回非空字符串则中止安装。
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+  AppExe, CmdLine: String;
+begin
+  Result := '';
+  AppExe := '{#AppName}.exe';
+
+  // 1) 强制关闭主进程及其子进程树（/T = process tree）
+  CmdLine := ExpandConstant('taskkill /F /IM "' + AppExe + '" /T');
+  Exec('cmd.exe', '/C ' + CmdLine, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+  // 2) 关闭从安装目录启动的 javaw.exe（MCP 服务子进程）
+  //    用 WMIC 按 CommandLine 过滤，避免误杀其他 Java 程序
+  CmdLine := 'wmic process where "name=''javaw.exe'' and CommandLine like ''%{#AppName}%''" call terminate >nul 2>&1';
+  Exec('cmd.exe', '/C ' + CmdLine, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+  // 3) 等待短暂时间让文件锁释放
+  Sleep(500);
+end;
+
 // 安装信息落地：把卸载命令等信息写到 app 目录，供向导自卸载调用
 procedure CurStepChanged(CurStep: TSetupStep);
 var
