@@ -7,8 +7,11 @@ import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
+import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
@@ -36,84 +39,136 @@ public final class SelfTest {
 
     public static Result run(Path root, String env) {
         Result r = new Result();
-        Path toolkit = root.resolve(Cfg.TOOLKIT_FILE_NAME);
-        Path tap = root.resolve(Cfg.TAP_FILE_NAME);
-        Path cfg = Installer.configYaml(root, env);
-        if (!Files(toolkit) || !Files(tap) || !Files(cfg)) {
-            r.ok = false;
-            r.detail = "运行时或环境配置缺失，请先部署运行时并保存环境配置";
-            return r;
-        }
-        String java = Installer.resolveJava(root); // 优先安装目录精简运行时，与注册链路一致
-        List<String> cmd = List.of(
-                java, "-jar", tap.toString(), "--log", Installer.callLog(root, env).toString(), "--",
-                java, "-DconfigFile=" + cfg.toString(), "-Dtools=db-ping", "-jar", toolkit.toString());
-        Process p = null;
+        // 打开自检专用日志
+        PrintStream log = openSelfTestLog(root);
+        log.println("=== 自检开始 === " + Instant.now());
+
         try {
-            final Process proc = new ProcessBuilder(cmd).redirectErrorStream(false).start();
-            p = proc;
-            StringBuilder errBuf = new StringBuilder();
-            Thread errReader = new Thread(() -> readAll(proc.getErrorStream(), errBuf), "selftest-stderr");
-            errReader.setDaemon(true);
-            errReader.start();
+            Path toolkit = root.resolve(Cfg.TOOLKIT_FILE_NAME);
+            Path tap = root.resolve(Cfg.TAP_FILE_NAME);
+            Path cfg = Installer.configYaml(root, env);
+            log.println("toolkit: " + toolkit + " exists=" + Files.isRegularFile(toolkit));
+            log.println("tap:     " + tap + " exists=" + Files.isRegularFile(tap));
+            log.println("config:  " + cfg + " exists=" + Files.isRegularFile(cfg));
 
-            BufferedWriter w = new BufferedWriter(new OutputStreamWriter(proc.getOutputStream(), StandardCharsets.UTF_8));
-            BufferedReader rd = new BufferedReader(new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8));
-            // 独立读线程 + 阻塞队列：不依赖 ready()（Windows pipe 上不可靠）
-            java.util.concurrent.LinkedBlockingQueue<String> lines = new java.util.concurrent.LinkedBlockingQueue<>();
-            Thread reader = new Thread(() -> {
-                try {
-                    String l;
-                    while ((l = rd.readLine()) != null) {
-                        lines.put(l);
+            if (!Files.isRegularFile(toolkit) || !Files.isRegularFile(tap) || !Files.isRegularFile(cfg)) {
+                r.ok = false;
+                r.detail = "运行时或环境配置缺失，请先部署运行时并保存环境配置";
+                log.println("FAIL: " + r.detail);
+                return r;
+            }
+
+            String java = Installer.resolveJava(root);
+            log.println("java:    " + java + " exists=" + Files.isRegularFile(Path.of(java)));
+
+            // 用引号包裹含空格的路径，确保 JVM -D 参数正确解析
+            String cfgPath = cfg.toString();
+            String tapPath = tap.toString();
+            String toolkitPath = toolkit.toString();
+            String logPath = Installer.callLog(root, env).toString();
+
+            List<String> cmd = List.of(
+                    java, "-jar", tapPath, "--log", logPath, "--",
+                    java, "-DconfigFile=\"" + cfgPath + "\"", "-Dtools=db-ping", "-jar", toolkitPath);
+            log.println("CMD: " + String.join(" ", cmd));
+
+            Process p = null;
+            try {
+                final Process proc = new ProcessBuilder(cmd).redirectErrorStream(false).start();
+                p = proc;
+                log.println("子进程已启动, PID=" + proc.pid());
+
+                StringBuilder errBuf = new StringBuilder();
+                Thread errReader = new Thread(() -> readAll(proc.getErrorStream(), errBuf), "selftest-stderr");
+                errReader.setDaemon(true);
+                errReader.start();
+
+                BufferedWriter w = new BufferedWriter(new OutputStreamWriter(proc.getOutputStream(), StandardCharsets.UTF_8));
+                BufferedReader rd = new BufferedReader(new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8));
+                java.util.concurrent.LinkedBlockingQueue<String> lines = new java.util.concurrent.LinkedBlockingQueue<>();
+                Thread reader = new Thread(() -> {
+                    try {
+                        String l;
+                        while ((l = rd.readLine()) != null) {
+                            log.println("  [tap->] " + l);
+                            lines.put(l);
+                        }
+                    } catch (Exception ignored) {
                     }
-                } catch (Exception ignored) {
-                    // 进程结束或中断
-                }
-            }, "selftest-reader");
-            reader.setDaemon(true);
-            reader.start();
+                }, "selftest-reader");
+                reader.setDaemon(true);
+                reader.start();
 
-            // 1) initialize
-            w.write("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"oracle-mcp-setup\",\"version\":\"0.1\"}}}");
-            w.write("\n"); // MCP stdio 分隔符固定为 \n，不能用平台相关 newLine（Windows 会写 \r\n）
-            w.flush();
-            String initResp = awaitId(lines, "1");
-            if (initResp == null) {
-                r.detail = "MCP 握手超时（initialize 无响应）";
+                // 1) initialize
+                String initMsg = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"oracle-mcp-setup\",\"version\":\"0.1\"}}}";
+                log.println(">> initialize");
+                w.write(initMsg);
+                w.write("\n");
+                w.flush();
+                String initResp = awaitId(lines, "1");
+                if (initResp == null) {
+                    r.detail = "MCP 握手超时（initialize 无响应）";
+                    r.stderrTail = tail(errBuf);
+                    log.println("FAIL: " + r.detail);
+                    log.println("stderr: " + r.stderrTail);
+                    return r;
+                }
+                log.println("<< initialize OK: " + initResp.substring(0, Math.min(200, initResp.length())));
+
+                // 2) initialized 通知
+                w.write("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
+                w.write("\n");
+                w.flush();
+
+                // 3) db-ping
+                log.println(">> db-ping");
+                w.write("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"db-ping\",\"arguments\":{}}}");
+                w.write("\n");
+                w.flush();
+                String pingResp = awaitId(lines, "2");
+                if (pingResp == null) {
+                    r.detail = "db-ping 超时（数据库连接可能缓慢或不可达）";
+                    r.stderrTail = tail(errBuf);
+                    log.println("FAIL: " + r.detail);
+                    log.println("stderr: " + r.stderrTail);
+                    return r;
+                }
+                log.println("<< db-ping: " + pingResp.substring(0, Math.min(500, pingResp.length())));
+                parsePing(pingResp, r);
                 r.stderrTail = tail(errBuf);
+                log.println((r.ok ? "PASS" : "FAIL") + ": " + r.detail);
                 return r;
-            }
-            // 2) initialized 通知
-            w.write("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
-            w.write("\n"); // MCP stdio 分隔符固定为 \n，不能用平台相关 newLine（Windows 会写 \r\n）
-            w.flush();
-            // 3) db-ping
-            w.write("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"db-ping\",\"arguments\":{}}}");
-            w.write("\n"); // MCP stdio 分隔符固定为 \n，不能用平台相关 newLine（Windows 会写 \r\n）
-            w.flush();
-            String pingResp = awaitId(lines, "2");
-            if (pingResp == null) {
-                r.detail = "db-ping 超时（数据库连接可能缓慢或不可达）";
-                r.stderrTail = tail(errBuf);
+            } catch (Exception e) {
+                r.ok = false;
+                r.detail = "自检进程异常：" + e.getMessage();
+                log.println("EXCEPTION: " + e.getClass().getName() + ": " + e.getMessage());
+                e.printStackTrace(log);
                 return r;
+            } finally {
+                if (p != null && p.isAlive()) {
+                    log.println("销毁子进程...");
+                    p.destroy();
+                }
             }
-            parsePing(pingResp, r);
-            r.stderrTail = tail(errBuf);
-            return r;
-        } catch (Exception e) {
-            r.ok = false;
-            r.detail = "自检进程异常：" + e.getMessage();
-            return r;
         } finally {
-            if (p != null && p.isAlive()) {
-                p.destroy();
-            }
+            log.println("=== 自检结束 ===");
+            log.flush();
+            log.close();
         }
     }
 
-    private static boolean Files(Path p) {
-        return java.nio.file.Files.isRegularFile(p);
+    /** 自检日志写入安装目录 logs/selftest-YYYY-MM-DD.log */
+    private static PrintStream openSelfTestLog(Path root) {
+        try {
+            Path logDir = root.resolve("logs");
+            Files.createDirectories(logDir);
+            String date = java.time.LocalDate.now().toString();
+            Path logFile = logDir.resolve("selftest-" + date + ".log");
+            return new PrintStream(new java.io.FileOutputStream(logFile.toFile(), true), true, "UTF-8");
+        } catch (Exception e) {
+            System.err.println("[SelfTest] 无法打开日志: " + e.getMessage());
+            return System.err;
+        }
     }
 
     /** 从读线程的行队列中等待包含指定 id 的响应行，超时返回 null。 */
