@@ -72,7 +72,18 @@ public final class TapMain {
 
         String[] cmd = new String[args.length - split - 1];
         System.arraycopy(args, split + 1, cmd, 0, cmd.length);
-        Process child = new ProcessBuilder(cmd).redirectErrorStream(false).start();
+        System.err.println("[mcp-tap] child CMD: " + String.join(" ", cmd));
+
+        Process child;
+        try {
+            child = new ProcessBuilder(cmd).redirectErrorStream(false).start();
+            System.err.println("[mcp-tap] child started, PID=" + child.pid());
+        } catch (Exception e) {
+            System.err.println("[mcp-tap] failed to start child: " + e.getMessage());
+            e.printStackTrace(System.err);
+            System.exit(3);
+            return;
+        }
 
         Thread outPump = pump(child.getInputStream(), System.out, TapMain::scanResponse, "out");
         Thread errPump = pump(child.getErrorStream(), System.err, null, "err");
