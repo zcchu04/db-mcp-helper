@@ -1,23 +1,23 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Build Oracle MCP Helper Windows installer (.msi / .exe / app-image).
+  Build Oracle MCP Helper Windows installer (.exe / .msi / app-image).
 .DESCRIPTION
   1. Verify JDK 17
-  2. Verify/download WiX Toolset v3.11.2 (required for .msi/.exe)
+  2. Verify Inno Setup (for .exe) or WiX Toolset (for .msi)
   3. Build mcp-tap and locate oracle-db-mcp-toolkit
   4. jlink MCP runtime and installer runtime
   5. Stage embedded resources and build setup-app fat jar
   6. Package with jpackage
-  Default output is .msi; use -Type to switch.
+  Default output is .exe (supports custom install directory); use -Type to switch.
 .EXAMPLE
   .\package-windows.ps1
-  .\package-windows.ps1 -Type exe
+  .\package-windows.ps1 -Type msi
   .\package-windows.ps1 -Type app-image
 #>
 param(
-    [ValidateSet("msi", "exe", "app-image")]
-    [string]$Type = "msi"
+    [ValidateSet("exe", "msi", "app-image")]
+    [string]$Type = "exe"
 )
 
 $ErrorActionPreference = "Stop"
@@ -34,6 +34,26 @@ function Test-Java17 {
         throw "JDK 17 required, found: $ver"
     }
     Write-Host "[OK] Java $ver"
+}
+
+function Get-InnoSetupPath {
+    $candidates = @(
+        "C:\Program Files (x86)\Inno Setup 6",
+        "C:\Program Files\Inno Setup 6",
+        "C:\Inno Setup 6"
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path "$c\ISCC.exe") {
+            Write-Host "[OK] Inno Setup found: $c"
+            return $c
+        }
+    }
+    $found = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+    if ($found) {
+        Write-Host "[OK] Inno Setup found: $($found.Source)"
+        return Split-Path $found.Source
+    }
+    throw "Inno Setup not found; download from https://jrsoftware.org/isdl.php and install"
 }
 
 function Get-WixPath {
@@ -187,8 +207,15 @@ function Invoke-Jpackage {
 
 Set-Location $PSScriptRoot
 Test-Java17
-$wix = Get-WixPath
-$env:PATH = "$wix;$env:PATH"
+
+if ($Type -eq "exe") {
+    $inno = Get-InnoSetupPath
+    $env:PATH = "$inno;$env:PATH"
+} elseif ($Type -eq "msi") {
+    $wix = Get-WixPath
+    $env:PATH = "$wix;$env:PATH"
+}
+
 $toolkit = Resolve-Toolkit
 
 Invoke-McpTapBuild
