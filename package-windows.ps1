@@ -122,11 +122,27 @@ function Invoke-JlinkAppRuntime {
     if ($LASTEXITCODE -ne 0) { throw "jlink installer runtime failed" }
 }
 
+function Get-GitBash {
+    $candidates = @(
+        "C:\Program Files\Git\bin\bash.exe",
+        "C:\Program Files (x86)\Git\bin\bash.exe",
+        "C:\Develop Program Files\Git\bin\bash.exe",
+        "C:\Develop Program Files\Git\usr\bin\bash.exe"
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path $c) { return $c }
+    }
+    $found = Get-Command bash -ErrorAction SilentlyContinue | Where-Object { $_.Source -notmatch "WindowsApps|System32" } | Select-Object -First 1
+    if ($found) { return $found.Source }
+    throw "git-bash not found; install Git for Windows"
+}
+
 function Invoke-StageResources {
     param([string]$ToolkitJar)
     Write-Host "[INFO] Staging resources ..."
     $env:TOOLKIT_SRC = $ToolkitJar
-    & bash "$PSScriptRoot\stage-resources.sh"
+    $bash = Get-GitBash
+    & $bash "$PSScriptRoot\stage-resources.sh"
     if ($LASTEXITCODE -ne 0) { throw "stage-resources.sh failed" }
 }
 
