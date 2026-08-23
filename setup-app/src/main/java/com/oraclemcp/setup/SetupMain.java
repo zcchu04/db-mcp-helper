@@ -152,8 +152,9 @@ public final class SetupMain {
     // ---------- deploy ----------
 
     private static JsonObject deploy(JsonObject body) throws IOException {
+        // 安装形态下不再单独询问目录：root 缺省即用安装过程中用户选择的目录（{app}）
         String reqRoot = str(body, "root");
-        Path root = reqRoot != null && !reqRoot.isBlank() ? Path.of(reqRoot.trim()) : resolveRoot(null);
+        Path root = reqRoot != null && !reqRoot.isBlank() ? Path.of(reqRoot.trim()) : Cfg.installDir();
         validateInstallRoot(root);
         State st = Installer.deploy(root);
         Cfg.writeLastRoot(root);
@@ -489,9 +490,10 @@ public final class SetupMain {
     }
 
     /**
-     * 一键卸载：先执行一键清空，再移除安装程序自身。
-     * jpackage 形态（系统属性 jpackage.app-path 存在）调度退出后把程序目录移入回收站；
-     * 开发形态（直接 java -jar）无法自删运行中的 JAR，仅清空数据并提示手动处理。
+     * 一键卸载：先执行一键清空（数据 + mcp.json 条目），再移除安装程序自身。
+     * 正式安装形态（Inno Setup）从安装目录的 install-info.json 读取 uninstallString，
+     * 调起 Inno 卸载器（unins000.exe）以正规方式移除程序目录与卸载注册项；
+     * 开发形态（直接 java -jar）无 Inno 卸载信息，仅清空数据并提示手动删除 JAR。
      */
     private static JsonObject uninstall() throws IOException {
         JsonObject d = reset();
@@ -499,11 +501,11 @@ public final class SetupMain {
         boolean shortcutRemoved = removeDesktopShortcut();
         d.addProperty("shortcutRemoved", shortcutRemoved);
 
-        String jpackagePath = System.getProperty("jpackage.app-path");
-        if (jpackagePath != null && !jpackagePath.isBlank()) {
-            Path appDir = Path.of(jpackagePath).getParent();
-            scheduleTrashAfterExit(appDir);
-            d.addProperty("selfRemoved", "程序目录将在退出后移入回收站：" + appDir);
+        String uninstallCmd = Cfg.readUninstallString();
+        if (uninstallCmd != null && !uninstallCmd.isBlank()) {
+            Path appDir = Cfg.resolveAppDir();
+            scheduleInnoUninstall(uninstallCmd, appDir);
+            d.addProperty("selfRemoved", "已调起 Inno 卸载器：" + uninstallCmd);
         } else {
             d.addProperty("selfRemoved", "开发模式运行（java -jar），数据已全部清空；安装程序 JAR 请在向导退出后手动删除");
         }
@@ -541,63 +543,18 @@ public final class SetupMain {
         return false;
     }
 
-    /** 调度本进程退出后移除目录：优先回收站，不支持时兜底移入父目录 .trash。 */
-    private static void scheduleTrashAfterExit(Path target) {
-        String os = System.getProperty("os.name", "").toLowerCase();
-        String abs = target.toAbsolutePath().toString();
-        if (os.contains("win")) {
-            if (scheduleViaTaskScheduler(abs)) {
-                return; // 任务计划程序脱离进程树执行，不受父进程退出影响
-            }
-        }
-        // 兜底：直接派生延迟进程（常规双击启动场景下可用）
+    /**
+     * 调起 Inno 卸载器：用 start /wait 以独立进程运行，使其脱离本向导进程树，
+     * 在向导退出后仍可继续删除程序目录。uninstallCmd 通常为 unins000.exe 路径。
+     */
+    private static void scheduleInnoUninstall(String uninstallCmd, Path appDir) {
         try {
-            String esc = abs.replace("'", "''");
-            ProcessBuilder pb;
-            if (os.contains("win")) {
-                pb = new ProcessBuilder("powershell.exe", "-NoProfile", "-Command", trashScriptBody(esc));
-            } else {
-                pb = new ProcessBuilder("sh", "-c",
-                        "sleep 3; gio trash '" + esc + "' 2>/dev/null || { mkdir -p \"$(dirname '" + esc + "')/.trash\" && mv '" + esc + "' \"$(dirname '" + esc + "')/.trash/$(basename '" + esc + "')-$(date +%Y%m%d%H%M%S)\"; }");
-            }
-            pb.start();
+            String esc = uninstallCmd.replace("\"", "\\\"");
+            new ProcessBuilder("cmd.exe", "/c", "start", "", "/wait", "cmd.exe", "/c",
+                    "\"" + esc + "\" /SILENT /SUPPRESSMSGBOXES").start();
         } catch (Exception ignored) {
-            // 自删除失败时数据已清空，仅程序目录残留
+            // 调起失败不影响已清空的数据；用户可后续从控制面板卸载
         }
-    }
-
-    /** Windows：写清理脚本到临时目录，经任务计划程序延迟执行（一次性任务，脚本末尾自删任务与自身）。 */
-    private static boolean scheduleViaTaskScheduler(String abs) {
-        try {
-            String ts = String.valueOf(System.currentTimeMillis());
-            Path ps1 = Path.of(System.getProperty("java.io.tmpdir"), "oracle-mcp-cleanup-" + ts + ".ps1");
-            String tn = "OracleMCPSetupCleanup" + ts;
-            String script = "Start-Sleep -Seconds 2\r\n" + trashScriptBody(abs.replace("'", "''")) + "\r\n"
-                    + "& schtasks.exe /Delete /TN '" + tn + "' /F 2>$null\r\n"
-                    + "Remove-Item -Force -ErrorAction SilentlyContinue $MyInvocation.MyCommand.Path\r\n";
-            java.nio.file.Files.writeString(ps1, script, java.nio.charset.StandardCharsets.UTF_8);
-            String runAt = java.time.LocalTime.now().plusSeconds(70).format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"));
-            // 注意：/Z 与 /SC ONCE 在新版 Windows 会报 EndBoundary XML 错误，故由脚本自删任务
-            ProcessBuilder pb = new ProcessBuilder("schtasks.exe", "/Create", "/F", "/TN", tn,
-                    "/SC", "ONCE", "/ST", runAt,
-                    "/TR", "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"" + ps1.toAbsolutePath() + "\"");
-            pb.redirectErrorStream(true);
-            Process p = pb.start();
-            String out = new String(p.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
-            return p.waitFor() == 0 && !out.toLowerCase().contains("error") && !out.contains("错误");
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    /** PowerShell 清理主体：回收站优先，失败兜底移入父目录 .trash。 */
-    private static String trashScriptBody(String esc) {
-        return "try { Add-Type -AssemblyName Microsoft.VisualBasic; "
-                + "[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory('" + esc + "', 'OnlyErrorDialogs', 'SendToRecycleBin') } catch {}; "
-                + "if (Test-Path '" + esc + "') { "
-                + "$fb = Join-Path (Split-Path '" + esc + "') '.trash'; "
-                + "New-Item -ItemType Directory -Force -Path $fb | Out-Null; "
-                + "Move-Item -Force '" + esc + "' (Join-Path $fb ((Split-Path '" + esc + "' -Leaf) + '-' + (Get-Date -Format yyyyMMddHHmmss))) }";
     }
 
     // ---------- helpers ----------
@@ -616,7 +573,8 @@ public final class SetupMain {
         if (st != null && st.root != null && !st.root.isBlank()) {
             return Path.of(st.root);
         }
-        return Cfg.defaultRoot();
+        // 安装形态：运行时直接释放到安装过程中用户选择的目录（{app}），不再单独询问
+        return Cfg.installDir();
     }
 
     private static Path requireRoot() {
@@ -627,7 +585,11 @@ public final class SetupMain {
         return root;
     }
 
-    /** 校验安装根目录：绝对路径、可写、不能位于安装程序自身目录内。 */
+    /**
+     * 校验安装根目录：绝对路径、可写。
+     * 注意：运行时默认就释放到安装目录（{app}）内，因此不再禁止"位于安装程序自身目录内"——
+     * 这是预期行为（与向导同目录，卸载时一并清理）。仅保留绝对路径与可写性校验。
+     */
     private static void validateInstallRoot(Path root) {
         if (!root.isAbsolute()) {
             throw new IllegalArgumentException("安装根目录必须是绝对路径：" + root);
@@ -639,14 +601,10 @@ public final class SetupMain {
             Files.writeString(test, "ok", StandardCharsets.UTF_8);
             Files.deleteIfExists(test);
         } catch (Exception e) {
-            throw new IllegalArgumentException("安装根目录不可写或无法创建：" + normalized + "（" + e.getMessage() + "）");
-        }
-        Path appDir = resolveAppDir();
-        if (appDir != null) {
-            Path appNormalized = appDir.toAbsolutePath().normalize();
-            if (normalized.startsWith(appNormalized)) {
-                throw new IllegalArgumentException("安装根目录不能位于安装程序自身目录内：" + appNormalized);
-            }
+            String hint = normalized.startsWith(Path.of("C:\\Program Files").normalize())
+                    ? "（若装在 Program Files 且无写权限，请改用安装器「为当前用户安装」或选其他目录）"
+                    : "";
+            throw new IllegalArgumentException("安装根目录不可写或无法创建：" + normalized + "（" + e.getMessage() + "）" + hint);
         }
     }
 

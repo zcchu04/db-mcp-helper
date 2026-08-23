@@ -107,4 +107,66 @@ public final class Cfg {
             return 8765;
         }
     }
+
+    /**
+     * 读取安装时落地到安装目录的 install-info.json（由 Inno Setup 的 [Code] 写入）。
+     * 至少包含 uninstallString 字段（Inno 卸载器路径），供向导发起正规卸载。
+     * 找不到或损坏返回 null。
+     */
+    public static String readUninstallString() {
+        String path = System.getProperty("setup.installInfo");
+        if (path == null || path.isBlank()) {
+            Path appDir = resolveAppDir();
+            if (appDir == null) {
+                return null;
+            }
+            path = appDir.resolve("install-info.json").toString();
+        }
+        try {
+            String text = java.nio.file.Files.readString(Path.of(path), java.nio.charset.StandardCharsets.UTF_8);
+            com.google.gson.JsonObject json = GSON_INSTANCE.fromJson(text, com.google.gson.JsonObject.class);
+            if (json != null && json.has("uninstallString")) {
+                return json.get("uninstallString").getAsString();
+            }
+        } catch (Exception ignored) {
+            // 文件不存在或解析失败均视为无卸载信息
+        }
+        return null;
+    }
+
+    private static final com.google.gson.Gson GSON_INSTANCE = new com.google.gson.Gson();
+
+    /** 安装目录；jpackage 形态取系统属性，开发形态尝试定位运行中的 JAR 目录。 */
+    public static Path resolveAppDir() {
+        String jp = System.getProperty("jpackage.app-path");
+        if (jp != null && !jp.isBlank()) {
+            return Path.of(jp).getParent();
+        }
+        try {
+            java.security.CodeSource cs = Cfg.class.getProtectionDomain().getCodeSource();
+            if (cs != null && cs.getLocation() != null) {
+                Path jar = Path.of(cs.getLocation().toURI());
+                if (java.nio.file.Files.isRegularFile(jar)) {
+                    return jar.getParent();
+                }
+            }
+        } catch (Exception ignored) {
+            // 开发模式下可能拿不到，忽略
+        }
+        return null;
+    }
+
+    /**
+     * 运行时默认部署根目录。
+     * 安装形态（Inno/jpackage 安装）：直接用安装过程中用户选择的目录（{app}），
+     * 不再单独询问"安装根目录"——运行时与向导程序同目录，卸载时一并清理。
+     * 开发形态（java -jar）：回退到 ~/.agent/mcp/oracle 保持兼容。
+     */
+    public static Path installDir() {
+        Path app = resolveAppDir();
+        if (app != null) {
+            return app;
+        }
+        return defaultRoot();
+    }
 }
