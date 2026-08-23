@@ -181,7 +181,7 @@ function Invoke-Jpackage {
 
     $args = @(
         "--type", $Type,
-        "--name", "oracle-mcp-helper-installer",
+        "--name", "Oracle MCP Helper",
         "--app-version", "1.0.0",
         "--vendor", "oraclemcp",
         "--input", "$PSScriptRoot\dist\app-staging",

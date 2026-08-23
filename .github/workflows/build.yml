@@ -109,7 +109,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          jpackage --type exe --name oracle-mcp-helper-installer --app-version 1.0.0 \
+          jpackage --type exe --name "Oracle MCP Helper" --app-version 1.0.0 \
             --vendor oraclemcp --input dist/app-staging \
             --main-jar oracle-mcp-setup.jar --main-class com.oraclemcp.setup.SetupMain \
             --runtime-image dist/app-runtime --dest dist/pkg \
@@ -199,7 +199,7 @@ jobs:
 
             三平台安装包：
 
-            - **Windows**: `oracle-mcp-helper-installer-1.0.0.exe`
+            - **Windows**: `Oracle MCP Helper-1.0.0.exe`
             - **macOS**: `Oracle MCP Setup.dmg`
             - **Linux**: `oracle-mcp-setup_1.0.0-1_amd64.deb` + app-image
 

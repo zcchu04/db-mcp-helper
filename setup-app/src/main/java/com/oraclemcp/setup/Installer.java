@@ -17,7 +17,7 @@ import java.util.List;
  * ├── oracle-db-mcp-toolkit-1.0.0.jar   共享
  * ├── mcp-tap.jar                       共享
  * ├── state.json
- * └── envs/&lt;env&gt;/config.yaml            每环境独立
+ * └── instance/&lt;env&gt;/config.yaml            每环境独立
  * </pre>
  */
 public final class Installer {
@@ -160,7 +160,7 @@ public final class Installer {
     }
 
     public static Path envDir(Path root, String env) {
-        return root.resolve("envs").resolve(env);
+        return root.resolve("instance").resolve(env);
     }
 
     public static Path configYaml(Path root, String env) {
