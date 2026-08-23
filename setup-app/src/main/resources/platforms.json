@@ -13,6 +13,17 @@
       ]
     },
     {
+      "id": "idea-qoder",
+      "name": "IDEA Qoder 插件",
+      "format": "mcpServers-json",
+      "configLocation": "IDEA 设置 → Qoder → MCP Servers（文件：~/.qoder/shared_client/mcp.json）",
+      "steps": [
+        "打开 IDEA 设置，找到 Qoder 插件的 MCP 配置",
+        "添加 MCP 服务器，粘贴右侧模板",
+        "保存后重启 IDEA 或刷新 Qoder 插件"
+      ]
+    },
+    {
       "id": "claude",
       "name": "Claude Code",
       "format": "claude-cli",

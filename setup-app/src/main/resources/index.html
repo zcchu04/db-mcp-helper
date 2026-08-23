@@ -3,15 +3,24 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Oracle MCP 安装向导</title>
+<title>Oracle 助手</title>
+<link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAEeklEQVR4nO1WS2hcVRg+r3vvzNwkkyaTh3lMm8Q0tBIjVjG2koIIDRWU2IpCF1pcuVSKLnSrC0EXbroTV+JGrO2iFtGAtBojbbRQ2tSkSWPeyWQeufO4j/P/cu5NSubRzMZsxMOFGe75//P93/c/zqWISPZysT09nfwXAMQue0XJQULoQyxohZ0qABJQAlK6i2MxECJnlLMK9rS8ilyJBFFwtvN8VMt3UC9LoRGJJ4FQonFWBSCIXRdbdlIipYSVhYaoLDkrgnI8yRkr4VEqkSdB48zHREoo58o6m3cTqbyV8wAxbPB9dUZDNCz8LfDNghQJxlyJVQDU0YwojZB4nvzmh6kLP87cvZ9Kpu2CIxGJJlitqccfMY8/1XZ25FBrkwkIPg9UJSlxV4mQ5D2paxx8Hh98/uvHn/1W21ITDnEhWJATRPQAHUcm13ID/bFfvno1pHNUfNWu50FoW94KDAK2BIFQlACDA02nRg5O3EkkUvZm1gU/FEpVtdSZ2vGjHSeHOjxPosbQd6Xb8e7USOys8EBLQAKg1B8dX9rfVnviWDxXcDNZt2BLRNQ1URNRTzbvXZtYev1Fp9Y0HAksiE0hVesDJBQQGaUzC9aF76e7D0RbYpHWWNiMaLaLCJDM2Asr1vxKThOMCx5k7sFTskRJgyIS8GkikuefaR8dm19azy+s5iQQRrG3IzS3aucKqAnlNfxcZ9TU/L4h4OtTjlCpk/18uRJbGkKfnHv2zr3k5Gx6edU6c2ogrXfG6Nqly3/G2+qOHG7igqQtp7lBqKz51Ms5lDZazpGUMQA0dfbKO5dvTiZODsWbGyKD/Y1XFuNE2pIap3vmv7h474/b69N/p25+d6azKZJzgVGqDgII67wKA2Xog9aZ+vRU8suEarHho60nXovfT4TurpBRZlrpzacfi517c8DQ2MamUxPRAJVjeQ4oolKvlAGixsjVGwvnv751/dZaKuNkLOf0cHf7/ni9iQusu65Wf/cFNvb7X3PL1rEn25/oay64wBhFgEgxgzKJbImMEkBDY+99etUMa73xaMpyNlL2SiKvCzB08cZLPeNrzdcmluZujBEuujuiZ0cO9fc1oypRMI0iVYr6YGtUAAEggtHZxey3V6Z7u+rbW8yWxnCNqXlA1zP22x+Nn/9wMNeYWAkbBEFKz/GAM+p6QTuXVlHJO78WVJWSxw82XBqdWV7PLa5mFfBWJKpUphYL/b1NP19fyubcw4/GmvaFXYmUVWiEyhcOFyzvwvtvHenrqr/40+zkTDKZsW1HDQtD5wCQztgvDx1wpCSEdLVHe9qjlqP+lwOU5iDvSBdwe2KTiKYm14blrKfyVtYFwJAhGutDZkQLhhLnzHY8ziij1PVA47SkTEsBANAqeFzNTjXCJKjEaYIJrgQIQvRQXUSBIyJhvjIg0ZNQG1aeuwH4dw5mbY8yujWgic97R42rqbmdjK3posYLRgyh+bdQFQCfB7E9KYMB/aDMgt+yzwtKCGfU0Cre+Q8B+BcX29PTyf8ApPr6B39EaKanlqaJAAAAAElFTkSuQmCC">
 <style>
-  :root { --pri:#2563eb; --pri-d:#1e40af; --ok:#16a34a; --err:#dc2626; --warn:#d97706; --bg:#f1f5f9; --card:#fff; --line:#e2e8f0; --tx:#0f172a; --tx2:#64748b; }
+  :root { --pri:#2563eb; --pri-d:#1e40af; --ok:#16a34a; --err:#dc2626; --warn:#d97706; --bg:#f1f5f9; --card:#fff; --line:#e2e8f0; --tx:#0f172a; --tx2:#64748b; --sidebar-w:220px; }
   * { box-sizing:border-box; margin:0; padding:0; }
-  body { font-family:"Segoe UI","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--tx); min-height:100vh; }
-  header { background:#0f172a; color:#fff; padding:14px 28px; display:flex; align-items:center; gap:14px; }
+  body { font-family:"Segoe UI","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--tx); height:100vh; overflow:hidden; display:flex; flex-direction:column; }
+  header { background:#0f172a; color:#fff; padding:14px 28px; display:flex; align-items:center; gap:14px; flex-shrink:0; }
   header h1 { font-size:17px; font-weight:600; }
   header .sub { font-size:12px; color:#94a3b8; }
-  main { max-width:960px; margin:24px auto; padding:0 20px 60px; }
+  .layout { display:flex; flex:1; min-height:0; }
+  .sidebar { width:var(--sidebar-w); background:#fff; border-right:1px solid var(--line); padding:16px 0; flex-shrink:0; overflow-y:auto; }
+  .sidebar .menu-section { margin-bottom:16px; }
+  .sidebar .menu-title { font-size:11px; color:var(--tx2); text-transform:uppercase; padding:8px 16px; font-weight:600; letter-spacing:0.5px; }
+  .sidebar .menu-item { display:block; padding:10px 16px; font-size:13px; color:var(--tx); text-decoration:none; cursor:pointer; border-left:3px solid transparent; transition:all 0.15s; }
+  .sidebar .menu-item:hover { background:#f8fafc; color:var(--pri); }
+  .sidebar .menu-item.active { background:#eff6ff; color:var(--pri); border-left-color:var(--pri); font-weight:500; }
+  .sidebar .menu-item .icon { margin-right:8px; }
+  main { flex:1; padding:24px; overflow-y:auto; min-width:0; min-height:0; }
   .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:22px 24px; margin-bottom:18px; }
   .card h2 { font-size:15px; margin-bottom:6px; }
   .card .desc { font-size:12.5px; color:var(--tx2); margin-bottom:14px; line-height:1.6; }
@@ -62,7 +71,29 @@
   <h1>Oracle MCP 安装向导</h1>
   <span class="sub" id="hd-sub">加载中…</span>
 </header>
-<main id="app"></main>
+<div class="layout">
+  <aside class="sidebar" id="sidebar" style="display:none">
+    <div class="menu-section">
+      <div class="menu-title">环境管理</div>
+      <a class="menu-item active" data-route="env-list"><span class="icon">📋</span>环境列表</a>
+      <a class="menu-item" data-route="env-add"><span class="icon">➕</span>添加环境</a>
+    </div>
+    <div class="menu-section">
+      <div class="menu-title">Skill 管理</div>
+      <a class="menu-item" data-route="skill"><span class="icon">🎯</span>部署位置</a>
+      <a class="menu-item" data-route="skill-guide"><span class="icon">📖</span>使用说明</a>
+    </div>
+    <div class="menu-section">
+      <div class="menu-title">系统信息</div>
+      <a class="menu-item" data-route="system"><span class="icon">ℹ️</span>配置概览</a>
+    </div>
+    <div class="menu-section">
+      <div class="menu-title">高级操作</div>
+      <a class="menu-item" data-route="danger"><span class="icon">⚠️</span>危险区</a>
+    </div>
+  </aside>
+  <main id="app"></main>
+</div>
 <div id="toast"></div>
 
 <script>
@@ -108,10 +139,58 @@ async function boot(){
   catch(e){ $("#app").innerHTML = "<div class='card'><h2>检测失败</h2><p>"+esc(e.message)+"</p></div>"; return; }
   $("#hd-sub").textContent = "运行时根目录：" + DET.root;
   render();
+  initMenu();
 }
+
+// ---------- 菜单栏路由 ----------
+function initMenu(){
+  const sidebar = $("#sidebar");
+  if(!sidebar) return;
+  sidebar.style.display = "block";
+  
+  document.querySelectorAll(".menu-item").forEach(item => {
+    item.onclick = (e) => {
+      e.preventDefault();
+      document.querySelectorAll(".menu-item").forEach(i => i.classList.remove("active"));
+      item.classList.add("active");
+      const route = item.dataset.route;
+      navigateTo(route);
+    };
+  });
+}
+
+function setActiveMenu(route){
+  document.querySelectorAll(".menu-item").forEach(i => i.classList.remove("active"));
+  const target = document.querySelector(`[data-route="${route}"]`);
+  if(target) target.classList.add("active");
+}
+
+function showSidebar(show){
+  const sidebar = $("#sidebar");
+  if(sidebar) sidebar.style.display = show ? "block" : "none";
+}
+
+function navigateTo(route){
+  showSidebar(true);
+  switch(route){
+    case "env-list": renderConsole(); setActiveMenu("env-list"); break;
+    case "env-add": renderWizard(2); showSidebar(false); break;
+    case "skill": renderSkillPage(); setActiveMenu("skill"); break;
+    case "skill-guide": renderSkillGuide(); setActiveMenu("skill-guide"); break;
+    case "system": renderSystemInfo(); setActiveMenu("system"); break;
+    case "danger": renderDangerZone(); setActiveMenu("danger"); break;
+    default: renderConsole(); setActiveMenu("env-list");
+  }
+}
+
 function render(){
-  if(state() && Object.keys(state().envs).length) renderConsole();
-  else renderWizard(1);
+  if(state() && Object.keys(state().envs).length){
+    renderConsole();
+    setActiveMenu("env-list");
+  } else {
+    renderWizard(1);
+    showSidebar(false);
+  }
 }
 
 // ---------- 危险区（清空/卸载） ----------
@@ -150,6 +229,7 @@ function bindDanger(){
 
 // ---------- 安装向导 ----------
 function renderWizard(step){
+  showSidebar(false);
   const steps = ["部署运行时","添加环境","连通自检","注册启用","部署 Skill","完成"];
   let html = "<div class='steps'>" + steps.map((s,i)=>`<span class="${i+1===step?"on":i+1<step?"done":""}">${i+1}. ${s}</span>`).join("") + "</div>";
   html += WIZ[step]();
@@ -167,7 +247,7 @@ WIZ[1] = () => `
   <label>安装根目录</label>
   <input type="text" id="w1-root" value="${esc(state()?state().root:DET.root)}">
   <div class="hint">当前 java：${esc(DET.javaCmd)}（M2 阶段使用本机 JVM，M3 将切换为安装包自带精简运行时）</div>
-  <div style="margin-top:16px"><button id="w1-btn">开始部署</button></div>
+  <div style="margin-top:16px"><button id="w1-btn">开始部署</button> <button class="ghost" id="w1-back">返回管理台</button></div>
   <div class="result" id="w1-r"></div>
 </div>`;
 WIZ_BIND[1] = () => { $("#w1-btn").onclick = async () => {
@@ -178,7 +258,7 @@ WIZ_BIND[1] = () => { $("#w1-btn").onclick = async () => {
     setResult("#w1-r", true, "运行时部署完成：" + esc(DET.root));
     setTimeout(()=>renderWizard(2), 600);
   } catch(e){ setResult("#w1-r", false, esc(e.message)); b.disabled=false; b.textContent="开始部署"; }
-};};
+}; $("#w1-back").onclick = () => navigateTo("env-list");};
 
 WIZ[2] = () => `
 <div class="card">
@@ -283,7 +363,7 @@ WIZ[4] = () => `
 <div class="card">
   <h2>3. 注册到 QoderWork 并启用</h2>
   <p class="desc">将环境 <b>${esc(CUR_ENV)}</b> 以连接器名 <b>oracle-${esc(CUR_ENV)}</b> 合并写入 ${esc(DET.mcpJsonPath)}（写前自动备份）。注册链路为 tap 监听代理包裹 Toolkit，与自检链路一致。</p>
-  <button id="w4-btn">注册并启用</button>
+  <button id="w4-btn">注册并启用</button> <button class="ghost" id="w4-back">返回管理台</button>
   <div class="result" id="w4-r"></div>
 </div>`;
 WIZ_BIND[4] = () => { $("#w4-btn").onclick = async () => {
@@ -296,7 +376,7 @@ WIZ_BIND[4] = () => { $("#w4-btn").onclick = async () => {
       + "<pre>" + esc(JSON.stringify(r.entry, null, 2)) + "</pre>");
     setTimeout(()=>renderWizard(5), 1200);
   } catch(e){ setResult("#w4-r", false, esc(e.message)); b.disabled=false; b.textContent="注册并启用"; }
-};};
+}; $("#w4-back").onclick = () => navigateTo("env-list");};
 
 WIZ[5] = () => {
   const h = DET.home.replace(/\\/g,"/");
@@ -314,7 +394,7 @@ WIZ[5] = () => {
   ${tg.map((t,i)=>`<label class="chk"><input type="checkbox" class="w5-t" data-v="${esc(t[1])}" ${t[2]?"checked":""}> ${esc(t[0])}<span class="hint" style="margin:0 0 0 6px">${esc(t[1])}</span></label>`).join("")}
   <label>自定义目录（可选）</label>
   <input type="text" id="w5-custom" placeholder="任意 agent 的技能根目录">
-  <div style="margin-top:16px"><button id="w5-btn">部署 Skill</button></div>
+  <div style="margin-top:16px"><button id="w5-btn">部署 Skill</button> <button class="ghost" id="w5-back">返回管理台</button></div>
   <div class="result" id="w5-r"></div>
 </div>`; };
 WIZ_BIND[5] = () => { $("#w5-btn").onclick = async () => {
@@ -327,7 +407,7 @@ WIZ_BIND[5] = () => { $("#w5-btn").onclick = async () => {
     setResult("#w5-r", true, "已部署 " + r.deployed.length + " 份：<br>" + r.deployed.map(d=>"• "+esc(d)).join("<br>"));
     setTimeout(()=>renderWizard(6), 900);
   } catch(e){ setResult("#w5-r", false, esc(e.message)); b.disabled=false; b.textContent="部署 Skill"; }
-};};
+}; $("#w5-back").onclick = () => navigateTo("env-list");};
 
 WIZ[6] = () => `
 <div class="card">
@@ -337,7 +417,7 @@ WIZ[6] = () => `
   <div class="kv"><b>MCP 配置文件</b>${esc(DET.mcpJsonPath)}</div>
   <div style="margin-top:16px"><button id="w6-btn">进入管理台</button></div>
 </div>`;
-WIZ_BIND[6] = () => { $("#w6-btn").onclick = ()=>renderConsole(); };
+WIZ_BIND[6] = () => { $("#w6-btn").onclick = ()=>navigateTo("env-list"); };
 
 // ---------- 管理台 ----------
 async function renderConsole(){
@@ -371,13 +451,46 @@ async function renderConsole(){
     <div class="result" id="c-r"></div>
   </div>
   <div class="card">
+    <h2>Skill 部署位置</h2>
+    <p class="desc">管理 oracle-db-ops skill 的部署位置。每个位置都会部署一份 skill 副本，增删环境后会自动同步所有副本的 environments.md 映射表。</p>
+    <div id="skill-targets-list"></div>
+    <div style="margin-top:16px; padding:12px; background:#f8f9fa; border-radius:6px">
+      <div style="font-weight:600; margin-bottom:8px">新增部署位置</div>
+      <div style="display:flex; gap:8px; margin-bottom:8px">
+        <button class="ghost small" id="add-skill-by-ai">按 AI 选择</button>
+        <button class="ghost small" id="add-skill-by-picker">选择目录</button>
+        <button class="ghost small" id="add-skill-by-input">手动输入</button>
+      </div>
+      <div id="skill-add-panel" style="display:none">
+        <div id="skill-ai-select" style="display:none">
+          <select id="skill-ai-dropdown" style="width:100%; padding:6px; border:1px solid var(--line); border-radius:4px">
+            <!-- 选项由 JS 动态生成，已部署的 AI 平台将置灰 -->
+          </select>
+          <button class="small" id="skill-ai-confirm" style="margin-top:6px">确认添加</button>
+        </div>
+        <div id="skill-picker-select" style="display:none">
+          <input type="file" id="skill-folder-picker" webkitdirectory directory multiple style="display:none">
+          <input type="text" id="skill-picker-path" placeholder="点击右侧按钮选择目录" readonly style="width:calc(100% - 90px); padding:6px; border:1px solid var(--line); border-radius:4px; background:#fff">
+          <button class="small" id="skill-picker-btn" style="width:80px">浏览...</button>
+          <button class="small" id="skill-picker-confirm" style="margin-top:6px">确认添加</button>
+        </div>
+        <div id="skill-input-select" style="display:none">
+          <input type="text" id="skill-input-path" placeholder="输入 skill 部署目录路径" style="width:100%; padding:6px; border:1px solid var(--line); border-radius:4px">
+          <button class="small" id="skill-input-confirm" style="margin-top:6px">确认添加</button>
+        </div>
+      </div>
+    </div>
+    <div class="result" id="skill-r"></div>
+  </div>
+  <div class="card">
     <h2>运行信息</h2>
     <div class="kv"><b>运行时根目录</b>${esc(DET.root)}</div>
     <div class="kv"><b>java</b>${esc(DET.javaCmd)}</div>
-    <div class="kv"><b>mcp.json</b>${esc(DET.mcpJsonPath)}（当前 oracle-* 条目：${esc((DET.registeredServers||[]).join(", ")||"无")}）</div>
+    <div class="kv"><b>QoderWork mcp.json</b>${esc(DET.mcpJsonPath)}（当前 oracle-* 条目：${esc((DET.registeredServers||[]).join(", ")||"无")}）</div>
+    <div class="kv"><b>IDEA Qoder 插件 mcp.json</b>${esc(DET.qoderPluginMcpJsonPath)}（当前 oracle-* 条目：${esc((DET.qoderPluginRegisteredServers||[]).join(", ")||"无")}）</div>
   </div>
   ${dangerZone()}`;
-  $("#c-add").onclick = ()=>renderWizard(2);
+  $("#c-add").onclick = ()=>navigateTo("env-add");
   $("#c-sync").onclick = async () => {
     try { const r = await api("/api/skill/sync", {}); setResult("#c-r", true, "已同步 " + r.updated.length + " 份映射：<br>"+r.updated.map(d=>"• "+esc(d)).join("<br>")); }
     catch(e){ setResult("#c-r", false, esc(e.message)); }
@@ -405,7 +518,7 @@ async function renderConsole(){
           <p class="desc">来源：${esc(r.logPath)}（最新在前，最多 100 条）。由 tap 监听代理旁路记录，协议流本身不受影响。</p>
           <pre>${body||"（暂无调用记录）"}</pre>
           <div style="margin-top:14px"><button class="ghost" id="lg-back">返回管理台</button></div></div>`;
-        $("#lg-back").onclick = renderConsole;
+        $("#lg-back").onclick = () => navigateTo("env-list");
       } else if(act==="guide"){
         renderGuide(env);
       } else if(act==="del"){
@@ -416,6 +529,149 @@ async function renderConsole(){
       }
     } catch(e){ toast(e.message,"err"); }
   });
+
+  // ---------- Skill 位置管理 ----------
+  const renderSkillTargets = async () => {
+    try {
+      const r = await api("/api/skill/targets");
+      const list = $("#skill-targets-list");
+      if (!r.targets || r.targets.length === 0) {
+        list.innerHTML = '<div class="hint">暂无已部署的 skill 位置</div>';
+        return;
+      }
+      list.innerHTML = r.targets.map((t, i) => `
+        <div style="display:flex; align-items:center; gap:10px; margin:8px 0; padding:8px 12px; background:#f8f9fa; border-radius:6px">
+          <span style="flex:1; font-family:monospace; font-size:13px">${esc(t)}</span>
+          <button class="danger small" data-skill-idx="${i}">删除</button>
+        </div>
+      `).join("");
+      list.querySelectorAll("[data-skill-idx]").forEach(btn => {
+        btn.onclick = async () => {
+          const idx = +btn.dataset.skillIdx;
+          const target = r.targets[idx];
+          if (!confirm("删除 skill 位置 " + target + "？\n将移除该目录下的 oracle-db-ops skill 副本（移入回收站）。")) return;
+          try {
+            await api("/api/skill/targets", {action:"remove", target});
+            toast("已删除 " + target);
+            renderSkillTargets();
+          } catch(e) { toast(e.message, "err"); }
+        };
+      });
+    } catch(e) { console.error(e); }
+  };
+
+  // AI 平台预设列表
+  const AI_PLATFORMS = [
+    { name: "QoderWork", path: "/.qoderwork/skills" },
+    { name: "跨 Agent 共享（Cursor/Gemini 等）", path: "/.agents/skills" },
+    { name: "Claude Code", path: "/.claude/skills" },
+    { name: "Codex CLI", path: "/.codex/skills" },
+    { name: "Gemini CLI", path: "/.gemini/skills" },
+    { name: "Cursor", path: "/.cursor/skills" }
+  ];
+
+  // 动态生成 AI 平台下拉选项（已部署的置灰）
+  const populateAiDropdown = async () => {
+    const dropdown = $("#skill-ai-dropdown");
+    dropdown.innerHTML = '<option value="">-- 选择 AI 平台 --</option>';
+    
+    try {
+      const r = await api("/api/skill/targets");
+      const deployed = new Set(r.targets || []);
+      
+      AI_PLATFORMS.forEach(platform => {
+        const fullPath = DET.home.replace(/\\/g, "/") + platform.path;
+        const isDeployed = deployed.has(fullPath);
+        
+        const option = document.createElement("option");
+        option.value = fullPath;
+        option.textContent = platform.name + (isDeployed ? " (已部署)" : "");
+        if (isDeployed) {
+          option.disabled = true;
+          option.style.color = "#999";
+        }
+        dropdown.appendChild(option);
+      });
+    } catch(e) {
+      console.error("Failed to populate AI dropdown:", e);
+    }
+  };
+
+  // 新增 skill 位置 - 显示/隐藏面板
+  const showAddPanel = async (mode) => {
+    $("#skill-add-panel").style.display = "block";
+    $("#skill-ai-select").style.display = mode === "ai" ? "block" : "none";
+    $("#skill-picker-select").style.display = mode === "picker" ? "block" : "none";
+    $("#skill-input-select").style.display = mode === "input" ? "block" : "none";
+    
+    if (mode === "ai") {
+      await populateAiDropdown();
+    }
+  };
+
+  $("#add-skill-by-ai").onclick = () => showAddPanel("ai");
+  $("#add-skill-by-picker").onclick = () => {
+    showAddPanel("picker");
+    $("#skill-folder-picker").click();
+  };
+  $("#add-skill-by-input").onclick = () => showAddPanel("input");
+
+  // 文件选择器处理
+  $("#skill-folder-picker").onchange = (e) => {
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      // webkitdirectory 返回的是目录下的文件，取第一个文件的路径作为目录
+      const path = files[0].webkitRelativePath || files[0].path;
+      const dirPath = path.split("/")[0] || path.split("\\")[0];
+      $("#skill-picker-path").value = dirPath;
+    }
+  };
+
+  // 浏览按钮
+  $("#skill-picker-btn").onclick = () => {
+    $("#skill-folder-picker").click();
+  };
+
+  // 确认添加 - AI 选择
+  $("#skill-ai-confirm").onclick = async () => {
+    const target = $("#skill-ai-dropdown").value;
+    if (!target) { toast("请选择 AI 平台", "warn"); return; }
+    try {
+      await api("/api/skill/targets", {action:"add", target});
+      toast("已新增 " + target);
+      $("#skill-add-panel").style.display = "none";
+      renderSkillTargets();
+    } catch(e) { toast(e.message, "err"); }
+  };
+
+  // 确认添加 - 目录选择
+  $("#skill-picker-confirm").onclick = async () => {
+    const target = $("#skill-picker-path").value.trim();
+    if (!target) { toast("请选择目录", "warn"); return; }
+    try {
+      await api("/api/skill/targets", {action:"add", target});
+      toast("已新增 " + target);
+      $("#skill-add-panel").style.display = "none";
+      $("#skill-picker-path").value = "";
+      renderSkillTargets();
+    } catch(e) { toast(e.message, "err"); }
+  };
+
+  // 确认添加 - 手动输入
+  $("#skill-input-confirm").onclick = async () => {
+    const target = $("#skill-input-path").value.trim();
+    if (!target) { toast("请输入目录路径", "warn"); return; }
+    try {
+      await api("/api/skill/targets", {action:"add", target});
+      toast("已新增 " + target);
+      $("#skill-add-panel").style.display = "none";
+      $("#skill-input-path").value = "";
+      renderSkillTargets();
+    } catch(e) { toast(e.message, "err"); }
+  };
+
+  renderSkillTargets();
+
   bindDanger();
 }
 
@@ -446,7 +702,241 @@ async function renderGuide(env){
     <div style="margin-top:16px"><button class="ghost" id="gd-back">返回管理台</button></div></div>`;
   detail();
   $("#gd-chips").onclick = e => { const b = e.target.closest("[data-pi]"); if(!b) return; cur = +b.dataset.pi; $("#gd-chips").innerHTML = chips(); detail(); };
-  $("#gd-back").onclick = renderConsole;
+  $("#gd-back").onclick = () => navigateTo("env-list");
+}
+
+// ---------- Skill 部署位置页面 ----------
+async function renderSkillPage(){
+  DET = await api("/api/detect");
+  const st = state() || {skillTargets:[]};
+  
+  const renderSkillTargets = async () => {
+    try {
+      const r = await api("/api/skill/targets");
+      const list = $("#skill-targets-list");
+      if (!r.targets || r.targets.length === 0) {
+        list.innerHTML = '<div class="hint">暂无已部署的 skill 位置</div>';
+        return;
+      }
+      list.innerHTML = r.targets.map((t, i) => `
+        <div style="display:flex; align-items:center; gap:10px; margin:8px 0; padding:8px 12px; background:#f8f9fa; border-radius:6px">
+          <span style="flex:1; font-family:monospace; font-size:13px">${esc(t)}</span>
+          <button class="danger small" data-skill-idx="${i}">删除</button>
+        </div>
+      `).join("");
+      list.querySelectorAll("[data-skill-idx]").forEach(btn => {
+        btn.onclick = async () => {
+          const idx = +btn.dataset.skillIdx;
+          const target = r.targets[idx];
+          if (!confirm("删除 skill 位置 " + target + "？\n将移除该目录下的 oracle-db-ops skill 副本（移入回收站）。")) return;
+          try {
+            await api("/api/skill/targets", {action:"remove", target});
+            toast("已删除 " + target);
+            renderSkillTargets();
+          } catch(e) { toast(e.message, "err"); }
+        };
+      });
+    } catch(e) { console.error(e); }
+  };
+
+  const AI_PLATFORMS = [
+    { name: "QoderWork", path: "/.qoderwork/skills" },
+    { name: "跨 Agent 共享（Cursor/Gemini 等）", path: "/.agents/skills" },
+    { name: "Claude Code", path: "/.claude/skills" },
+    { name: "Codex CLI", path: "/.codex/skills" },
+    { name: "Gemini CLI", path: "/.gemini/skills" },
+    { name: "Cursor", path: "/.cursor/skills" }
+  ];
+
+  const populateAiDropdown = async () => {
+    const dropdown = $("#skill-ai-dropdown");
+    dropdown.innerHTML = '<option value="">-- 选择 AI 平台 --</option>';
+    try {
+      const r = await api("/api/skill/targets");
+      const deployed = new Set(r.targets || []);
+      AI_PLATFORMS.forEach(platform => {
+        const fullPath = DET.home.replace(/\\/g, "/") + platform.path;
+        const isDeployed = deployed.has(fullPath);
+        const option = document.createElement("option");
+        option.value = fullPath;
+        option.textContent = platform.name + (isDeployed ? " (已部署)" : "");
+        if (isDeployed) { option.disabled = true; option.style.color = "#999"; }
+        dropdown.appendChild(option);
+      });
+    } catch(e) { console.error(e); }
+  };
+
+  const showAddPanel = async (mode) => {
+    $("#skill-add-panel").style.display = "block";
+    $("#skill-ai-select").style.display = mode === "ai" ? "block" : "none";
+    $("#skill-picker-select").style.display = mode === "picker" ? "block" : "none";
+    $("#skill-input-select").style.display = mode === "input" ? "block" : "none";
+    if (mode === "ai") await populateAiDropdown();
+  };
+
+  $("#app").innerHTML = `
+  <div class="card">
+    <h2>Skill 部署位置</h2>
+    <p class="desc">管理 oracle-db-ops skill 的部署位置。每个位置都会部署一份 skill 副本，增删环境后会自动同步所有副本的 environments.md 映射表。</p>
+    <div id="skill-targets-list"></div>
+    <div style="margin-top:16px; padding:12px; background:#f8f9fa; border-radius:6px">
+      <div style="font-weight:600; margin-bottom:8px">新增部署位置</div>
+      <div style="display:flex; gap:8px; margin-bottom:8px">
+        <button class="ghost small" id="add-skill-by-ai">按 AI 选择</button>
+        <button class="ghost small" id="add-skill-by-picker">选择目录</button>
+        <button class="ghost small" id="add-skill-by-input">手动输入</button>
+      </div>
+      <div id="skill-add-panel" style="display:none">
+        <div id="skill-ai-select" style="display:none">
+          <select id="skill-ai-dropdown" style="width:100%; padding:6px; border:1px solid var(--line); border-radius:4px"></select>
+          <button class="small" id="skill-ai-confirm" style="margin-top:6px">确认添加</button>
+        </div>
+        <div id="skill-picker-select" style="display:none">
+          <input type="file" id="skill-folder-picker" webkitdirectory directory multiple style="display:none">
+          <input type="text" id="skill-picker-path" placeholder="点击右侧按钮选择目录" readonly style="width:calc(100% - 90px); padding:6px; border:1px solid var(--line); border-radius:4px; background:#fff">
+          <button class="small" id="skill-picker-btn" style="width:80px">浏览...</button>
+          <button class="small" id="skill-picker-confirm" style="margin-top:6px">确认添加</button>
+        </div>
+        <div id="skill-input-select" style="display:none">
+          <input type="text" id="skill-input-path" placeholder="输入 skill 部署目录路径" style="width:100%; padding:6px; border:1px solid var(--line); border-radius:4px">
+          <button class="small" id="skill-input-confirm" style="margin-top:6px">确认添加</button>
+        </div>
+      </div>
+    </div>
+    <div class="result" id="skill-r"></div>
+  </div>`;
+
+  await renderSkillTargets();
+
+  $("#add-skill-by-ai").onclick = () => showAddPanel("ai");
+  $("#add-skill-by-picker").onclick = () => { showAddPanel("picker"); $("#skill-folder-picker").click(); };
+  $("#add-skill-by-input").onclick = () => showAddPanel("input");
+  $("#skill-folder-picker").onchange = (e) => {
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      const path = files[0].webkitRelativePath || files[0].path;
+      $("#skill-picker-path").value = path.split("/")[0] || path.split("\\")[0];
+    }
+  };
+  $("#skill-picker-btn").onclick = () => $("#skill-folder-picker").click();
+  $("#skill-ai-confirm").onclick = async () => {
+    const target = $("#skill-ai-dropdown").value;
+    if (!target) { toast("请选择 AI 平台", "warn"); return; }
+    try { await api("/api/skill/targets", {action:"add", target}); toast("已新增 " + target); $("#skill-add-panel").style.display = "none"; renderSkillTargets(); }
+    catch(e) { toast(e.message, "err"); }
+  };
+  $("#skill-picker-confirm").onclick = async () => {
+    const target = $("#skill-picker-path").value.trim();
+    if (!target) { toast("请选择目录", "warn"); return; }
+    try { await api("/api/skill/targets", {action:"add", target}); toast("已新增 " + target); $("#skill-add-panel").style.display = "none"; $("#skill-picker-path").value = ""; renderSkillTargets(); }
+    catch(e) { toast(e.message, "err"); }
+  };
+  $("#skill-input-confirm").onclick = async () => {
+    const target = $("#skill-input-path").value.trim();
+    if (!target) { toast("请输入目录路径", "warn"); return; }
+    try { await api("/api/skill/targets", {action:"add", target}); toast("已新增 " + target); $("#skill-add-panel").style.display = "none"; $("#skill-input-path").value = ""; renderSkillTargets(); }
+    catch(e) { toast(e.message, "err"); }
+  };
+}
+
+// ---------- Skill 使用说明 ----------
+function renderSkillGuide(){
+  $("#app").innerHTML = `
+  <div class="card">
+    <h2>📖 Skill 使用说明 — oracle-db-ops</h2>
+    <p class="desc">oracle-db-ops 是一个 Oracle 数据库安全操作规范 Skill，通过 oracle-* MCP 连接器执行 SQL 查询、表结构探查、行数统计、执行计划分析与受控写操作。</p>
+    
+    <h3 style="margin-top:20px; font-size:14px; color:var(--pri)">🎯 触发场景</h3>
+    <p style="margin:10px 0; line-height:1.8">当用户提到以下关键词时，Skill 会自动激活：</p>
+    <ul style="margin:10px 0; padding-left:20px; line-height:1.8">
+      <li>查 Oracle、查库、查表、表结构</li>
+      <li>跑 SQL、统计数据、执行计划</li>
+      <li>数据库连通性检查</li>
+      <li>提及环境名（如 uat/prod/生产/测试/小 O/小 o）要求取数</li>
+    </ul>
+
+    <h3 style="margin-top:20px; font-size:14px; color:var(--pri)">🔧 核心能力</h3>
+    <div style="margin:15px 0">
+      <div style="padding:12px; background:#f0f9ff; border-radius:6px; margin-bottom:10px">
+        <b> 环境识别</b><br>
+        <span style="font-size:13px; color:var(--tx2)">自动识别用户口语中的环境名（如"生产库"、"UAT"、"小 O"），映射到对应的 oracle-* 连接器。歧义时主动反问确认。</span>
+      </div>
+      <div style="padding:12px; background:#f0fdf4; border-radius:6px; margin-bottom:10px">
+        <b>📊 数据查询</b><br>
+        <span style="font-size:13px; color:var(--tx2)">通过 read-query 工具执行 SELECT 查询，返回 JSON 格式结果。支持复杂 SQL、多表关联、聚合统计。</span>
+      </div>
+      <div style="padding:12px; background:#fef3c7; border-radius:6px; margin-bottom:10px">
+        <b>🗂️ 表结构探查</b><br>
+        <span style="font-size:13px; color:var(--tx2)">使用 table 工具查看表列表、字段定义、索引信息。支持 all_tables、all_tab_columns 等数据字典查询。</span>
+      </div>
+      <div style="padding:12px; background:#fce7f3; border-radius:6px; margin-bottom:10px">
+        <b> 执行计划分析</b><br>
+        <span style="font-size:13px; color:var(--tx2)">通过 explain-plan 工具分析 SQL 执行计划，识别性能瓶颈，提供优化建议。</span>
+      </div>
+      <div style="padding:12px; background:#fee2e2; border-radius:6px; margin-bottom:10px">
+        <b>✏️ 受控写操作</b><br>
+        <span style="font-size:13px; color:var(--tx2)">write-query 工具支持 DML/DDL，但需要用户明确确认。高危操作（DROP/TRUNCATE/无 WHERE 的 UPDATE/DELETE）需逐字确认。</span>
+      </div>
+    </div>
+
+    <h3 style="margin-top:20px; font-size:14px; color:var(--pri)">🛡️ 安全规范</h3>
+    <ul style="margin:10px 0; padding-left:20px; line-height:1.8">
+      <li><b>环境优先</b>：执行前必须明确目标环境，未指明时反问，禁止猜测</li>
+      <li><b>只读默认</b>：默认使用只读权限，写操作需显式授权</li>
+      <li><b>写操作确认</b>：展示完整 SQL + 影响范围 + 获得用户明确确认</li>
+      <li><b>大表防护</b>：COUNT/全表扫描前先评估，大表禁止 SELECT *</li>
+      <li><b>密码保护</b>：禁止在对话中回显数据库密码</li>
+    </ul>
+
+    <h3 style="margin-top:20px; font-size:14px; color:var(--pri)">💬 使用示例</h3>
+    <pre style="margin-top:10px">-- 查询表结构
+在 uat 查一下 EC_REBATE_DETAIL_HEAD 的表结构
+
+-- 执行查询
+小 O，帮我统计一下 EC_REBATE_RULESET 有多少条记录
+
+-- 执行计划分析
+在 prod 环境分析一下这条 SQL 的执行计划：
+SELECT * FROM EC_REBATE_DETAIL_LINE WHERE RULE_ID = 'R001'
+
+-- 受控写操作（需确认）
+小 o，在 dev 环境执行这条 UPDATE：
+UPDATE EC_REBATE_FIELD SET STATUS = 'ACTIVE' WHERE ID = 123</pre>
+
+    <h3 style="margin-top:20px; font-size:14px; color:var(--pri)">📁 部署位置</h3>
+    <p style="margin:10px 0; line-height:1.8">Skill 可部署到多个 AI 平台的技能目录，当前已部署位置见「Skill 部署位置」页面。</p>
+  </div>`;
+}
+
+// ---------- 系统信息页面 ----------
+async function renderSystemInfo(){
+  DET = await api("/api/detect");
+  const st = state() || {envs:{}, skillTargets:[]};
+  
+  $("#app").innerHTML = `
+  <div class="card">
+    <h2>ℹ️ 配置概览</h2>
+    <div class="kv"><b>运行时根目录</b>${esc(DET.root)}</div>
+    <div class="kv"><b>Java 路径</b>${esc(DET.javaCmd)}</div>
+    <div class="kv"><b>QoderWork mcp.json</b>${esc(DET.mcpJsonPath)}</div>
+    <div class="kv"><b>IDEA Qoder 插件 mcp.json</b>${esc(DET.qoderPluginMcpJsonPath)}</div>
+    <div class="kv"><b>已注册服务器（QoderWork）</b>${esc((DET.registeredServers||[]).join(", ")||"无")}</div>
+    <div class="kv"><b>已注册服务器（IDEA Qoder）</b>${esc((DET.qoderPluginRegisteredServers||[]).join(", ")||"无")}</div>
+    <div class="kv"><b>Skill 部署位置数</b>${(st.skillTargets||[]).length} 个</div>
+    <div class="kv"><b>环境数量</b>${Object.keys(st.envs||{}).length} 个</div>
+  </div>
+  <div class="card">
+    <h2> 服务状态</h2>
+    <div class="kv"><b>MCP 服务状态</b><span class="badge ok">运行中</span></div>
+    <div class="kv"><b>监听端口</b>8765</div>
+    <div class="kv"><b>版本</b>1.0.0</div>
+  </div>`;
+}
+
+// ---------- 危险区页面 ----------
+function renderDangerZone(){
+  $("#app").innerHTML = dangerZone();
+  bindDanger();
 }
 
 boot();

@@ -57,7 +57,7 @@ public final class SetupMain {
                 return;
             }
             JsonObject body = "POST".equals(method) ? readBody(ex) : new JsonObject();
-            JsonObject resp = route(path, body, ex.getRequestURI());
+            JsonObject resp = route(path, body, ex.getRequestURI(), ex.getRequestMethod());
             send(ex, 200, resp);
         } catch (Exception e) {
             send(ex, 200, err(e.getMessage() == null ? e.toString() : e.getMessage()));
@@ -66,7 +66,7 @@ public final class SetupMain {
         }
     }
 
-    private static JsonObject route(String path, JsonObject body, URI uri) throws IOException {
+    private static JsonObject route(String path, JsonObject body, URI uri, String method) throws IOException {
         switch (path) {
             case "/api/detect":
                 return ok(detect());
@@ -90,6 +90,16 @@ public final class SetupMain {
                 return ok(skillDeploy(body));
             case "/api/skill/sync":
                 return ok(skillSync());
+            case "/api/skill/targets":
+                if ("POST".equals(method)) {
+                    String action = str(body, "action");
+                    if ("add".equals(action)) {
+                        return ok(skillAddTarget(body));
+                    } else if ("remove".equals(action)) {
+                        return ok(skillRemoveTarget(body));
+                    }
+                }
+                return ok(skillListTargets());
             case "/api/reset":
                 return ok(reset());
             case "/api/uninstall":
@@ -105,18 +115,36 @@ public final class SetupMain {
         Path root = resolveRoot(null);
         State st = State.load(root);
         JsonObject d = new JsonObject();
-        d.addProperty("home", Cfg.home().toString());
-        d.addProperty("root", root.toString());
+        d.addProperty("home", normalizePath(Cfg.home().toString()));
+        d.addProperty("root", normalizePath(root.toString()));
         d.addProperty("rootExists", Files.isDirectory(root));
         d.addProperty("toolkitDeployed", Files.isRegularFile(root.resolve(Cfg.TOOLKIT_FILE_NAME)));
         d.addProperty("tapDeployed", Files.isRegularFile(root.resolve(Cfg.TAP_FILE_NAME)));
-        d.addProperty("javaCmd", Cfg.javaCmd());
-        d.addProperty("mcpJsonPath", Cfg.mcpJsonPath().toString());
+        d.addProperty("javaCmd", normalizePath(Cfg.javaCmd()));
+        d.addProperty("mcpJsonPath", normalizePath(Cfg.mcpJsonPath().toString()));
+        d.addProperty("qoderPluginMcpJsonPath", normalizePath(Cfg.qoderPluginMcpJsonPath().toString()));
         JsonArray registered = new JsonArray();
         McpJson.serverNames(Cfg.mcpJsonPath()).stream().filter(n -> n.startsWith("oracle-")).forEach(registered::add);
         d.add("registeredServers", registered);
+        JsonArray qoderPluginRegistered = new JsonArray();
+        McpJson.serverNames(Cfg.qoderPluginMcpJsonPath()).stream().filter(n -> n.startsWith("oracle-")).forEach(qoderPluginRegistered::add);
+        d.add("qoderPluginRegisteredServers", qoderPluginRegistered);
         if (st != null) {
-            d.add("state", GSON.toJsonTree(st));
+            // 标准化 state 中的路径
+            JsonObject stateJson = GSON.toJsonTree(st).getAsJsonObject();
+            if (stateJson.has("root")) {
+                stateJson.addProperty("root", normalizePath(stateJson.get("root").getAsString()));
+            }
+            if (stateJson.has("javaCmd")) {
+                stateJson.addProperty("javaCmd", normalizePath(stateJson.get("javaCmd").getAsString()));
+            }
+            if (stateJson.has("skillTargets")) {
+                JsonArray targets = stateJson.getAsJsonArray("skillTargets");
+                JsonArray normalized = new JsonArray();
+                targets.forEach(e -> normalized.add(normalizePath(e.getAsString())));
+                stateJson.add("skillTargets", normalized);
+            }
+            d.add("state", stateJson);
         }
         return d;
     }
@@ -357,6 +385,73 @@ public final class SetupMain {
         return d;
     }
 
+    // ---------- skill targets 管理 ----------
+
+    /** 列出已部署的 skill 位置 */
+    private static JsonObject skillListTargets() throws IOException {
+        Path root = requireRoot();
+        State st = State.load(root);
+        if (st == null) {
+            throw new IllegalStateException("未检测到部署状态");
+        }
+        JsonObject d = new JsonObject();
+        JsonArray arr = new JsonArray();
+        st.skillTargets.forEach(t -> arr.add(normalizePath(t)));
+        d.add("targets", arr);
+        return d;
+    }
+
+    /** 新增 skill 位置 */
+    private static JsonObject skillAddTarget(JsonObject body) throws IOException {
+        Path root = requireRoot();
+        State st = State.load(root);
+        if (st == null) {
+            throw new IllegalStateException("未检测到部署状态");
+        }
+        String target = str(body, "target");
+        if (target == null || target.isBlank()) {
+            throw new IllegalArgumentException("target 不能为空");
+        }
+        target = target.trim();
+        if (!st.skillTargets.contains(target)) {
+            st.skillTargets.add(target);
+            st.save(root);
+            // 部署 skill 到新位置
+            SkillService.deploy(st, List.of(target));
+        }
+        JsonObject d = new JsonObject();
+        d.addProperty("target", target);
+        d.addProperty("added", !st.skillTargets.contains(target));
+        return d;
+    }
+
+    /** 删除 skill 位置 */
+    private static JsonObject skillRemoveTarget(JsonObject body) throws IOException {
+        Path root = requireRoot();
+        State st = State.load(root);
+        if (st == null) {
+            throw new IllegalStateException("未检测到部署状态");
+        }
+        String target = str(body, "target");
+        if (target == null || target.isBlank()) {
+            throw new IllegalArgumentException("target 不能为空");
+        }
+        target = target.trim();
+        boolean removed = st.skillTargets.remove(target);
+        if (removed) {
+            st.save(root);
+            // 删除 skill 目录
+            Path skillDir = Path.of(target).resolve(SkillService.SKILL_DIR_NAME);
+            if (Files.isDirectory(skillDir)) {
+                Trash.moveToTrash(skillDir);
+            }
+        }
+        JsonObject d = new JsonObject();
+        d.addProperty("target", target);
+        d.addProperty("removed", removed);
+        return d;
+    }
+
     // ---------- reset / uninstall ----------
 
     /**
@@ -369,6 +464,7 @@ public final class SetupMain {
         State st = State.load(root);
 
         int mcpRemoved = McpJson.removeByPrefix(Cfg.mcpJsonPath(), "oracle-");
+        int qoderPluginMcpRemoved = McpJson.removeByPrefix(Cfg.qoderPluginMcpJsonPath(), "oracle-");
 
         JsonArray skillMsgs = new JsonArray();
         if (st != null) {
@@ -620,5 +716,10 @@ public final class SetupMain {
         } catch (Exception ignored) {
             System.out.println("请手动打开浏览器访问：" + url);
         }
+    }
+
+    /** 统一路径分隔符为正斜杠，便于前端一致显示。 */
+    private static String normalizePath(String path) {
+        return path == null ? null : path.replace("\\", "/");
     }
 }

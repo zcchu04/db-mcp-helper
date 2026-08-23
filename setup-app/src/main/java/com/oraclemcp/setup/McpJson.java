@@ -39,12 +39,21 @@ public final class McpJson {
         return names;
     }
 
-    /** 注册/更新一个环境的 MCP 条目（tap 包 toolkit 链路），返回写入的条目。 */
+    /** 注册/更新一个环境的 MCP 条目（tap 包 toolkit 链路），同时写入 QoderWork 和 IDEA Qoder 插件配置。 */
     public static JsonObject register(Path mcpJson, String serverName, List<String> command) throws IOException {
-        JsonObject root = readRoot(mcpJson);
-        JsonObject servers = root.has("mcpServers") && root.get("mcpServers").isJsonObject()
-                ? root.getAsJsonObject("mcpServers") : new JsonObject();
+        JsonObject entry = buildEntry(command);
 
+        // 写入 QoderWork 配置
+        writeToMcpJson(mcpJson, serverName, entry);
+
+        // 写入 IDEA Qoder 插件配置
+        Path qoderPluginMcpJson = Cfg.qoderPluginMcpJsonPath();
+        writeToMcpJson(qoderPluginMcpJson, serverName, entry);
+
+        return entry;
+    }
+
+    private static JsonObject buildEntry(List<String> command) {
         JsonObject entry = new JsonObject();
         entry.addProperty("command", command.get(0));
         JsonArray args = new JsonArray();
@@ -53,15 +62,26 @@ public final class McpJson {
         }
         entry.add("args", args);
         entry.addProperty("enabled", true);
-
-        servers.add(serverName, entry);
-        root.add("mcpServers", servers);
-        writeRoot(mcpJson, root);
         return entry;
     }
 
-    /** 移除一个 server 条目；不存在则无操作。 */
+    private static void writeToMcpJson(Path mcpJson, String serverName, JsonObject entry) throws IOException {
+        JsonObject root = readRoot(mcpJson);
+        JsonObject servers = root.has("mcpServers") && root.get("mcpServers").isJsonObject()
+                ? root.getAsJsonObject("mcpServers") : new JsonObject();
+        servers.add(serverName, entry);
+        root.add("mcpServers", servers);
+        writeRoot(mcpJson, root);
+    }
+
+    /** 移除一个 server 条目；同时从 QoderWork 和 IDEA Qoder 插件配置中移除。 */
     public static boolean remove(Path mcpJson, String serverName) throws IOException {
+        boolean removed1 = removeFromMcpJson(mcpJson, serverName);
+        boolean removed2 = removeFromMcpJson(Cfg.qoderPluginMcpJsonPath(), serverName);
+        return removed1 || removed2;
+    }
+
+    private static boolean removeFromMcpJson(Path mcpJson, String serverName) throws IOException {
         JsonObject root = readRoot(mcpJson);
         if (!root.has("mcpServers") || !root.get("mcpServers").isJsonObject()) {
             return false;

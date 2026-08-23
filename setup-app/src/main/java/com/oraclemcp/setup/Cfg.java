@@ -39,6 +39,12 @@ public final class Cfg {
         return v != null && !v.isBlank() ? Path.of(v) : home().resolve(".qoderwork").resolve("mcp.json");
     }
 
+    /** IDEA Qoder 插件的 MCP 配置文件路径。 */
+    public static Path qoderPluginMcpJsonPath() {
+        String v = System.getProperty("setup.qoderPluginMcpJson");
+        return v != null && !v.isBlank() ? Path.of(v) : home().resolve(".qoder").resolve("shared_client").resolve("mcp.json");
+    }
+
     public static String toolkitJarOverride() {
         return System.getProperty("setup.toolkitJar");
     }
