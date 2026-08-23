@@ -35,13 +35,32 @@ public final class SetupMain {
 
     public static void main(String[] args) throws IOException {
         int port = Cfg.port();
+        String url = "http://127.0.0.1:" + port;
+        
+        // 检测是否已有实例在运行
+        if (isServerRunning(port)) {
+            System.out.println("检测到 Oracle MCP Setup 已在运行，直接打开浏览器...");
+            openBrowser(url);
+            return;
+        }
+        
+        // 启动新实例
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
         server.createContext("/", SetupMain::handle);
         server.start();
         serverRef = server;
-        String url = "http://127.0.0.1:" + port;
         System.out.println("Oracle MCP Setup 已启动：" + url);
         openBrowser(url);
+    }
+    
+    /** 检测指定端口是否已有服务在运行 */
+    private static boolean isServerRunning(int port) {
+        try (java.net.Socket socket = new java.net.Socket()) {
+            socket.connect(new InetSocketAddress("127.0.0.1", port), 500);
+            return true;
+        } catch (IOException e) {
+            return false;
+        }
     }
 
     private static void handle(HttpExchange ex) throws IOException {
