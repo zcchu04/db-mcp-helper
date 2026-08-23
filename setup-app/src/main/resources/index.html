@@ -243,22 +243,43 @@ const WIZ = {}, WIZ_BIND = {};
 WIZ[1] = () => `
 <div class="card">
   <h2>1. 部署运行时</h2>
-  <p class="desc">释放共享的 Oracle MCP Toolkit 与监听代理（tap）到安装根目录。多环境共享同一份运行时，每个环境仅独立一份连接配置。</p>
+  <p class="desc">释放共享的 Oracle MCP Toolkit 与监听代理（tap）到安装根目录。多环境共享同一份运行时，每个环境仅独立一份连接配置。安装器会记住你选择的目录，下次启动自动沿用。</p>
   <label>安装根目录</label>
-  <input type="text" id="w1-root" value="${esc(state()?state().root:DET.root)}">
+  <div style="display:flex; gap:8px">
+    <input type="text" id="w1-root" value="${esc(state()?state().root:DET.root)}" style="flex:1">
+    <input type="file" id="w1-root-picker" webkitdirectory directory multiple style="display:none">
+    <button class="ghost small" id="w1-root-browse" style="width:80px; flex-shrink:0">浏览…</button>
+  </div>
   <div class="hint">当前 java：${esc(DET.javaCmd)}（M2 阶段使用本机 JVM，M3 将切换为安装包自带精简运行时）</div>
   <div style="margin-top:16px"><button id="w1-btn">开始部署</button> <button class="ghost" id="w1-back">返回管理台</button></div>
   <div class="result" id="w1-r"></div>
 </div>`;
-WIZ_BIND[1] = () => { $("#w1-btn").onclick = async () => {
-  const b = $("#w1-btn"); b.disabled = true; b.textContent = "部署中…";
-  try {
-    await api("/api/deploy", {root: $("#w1-root").value.trim()});
-    DET = await api("/api/detect");
-    setResult("#w1-r", true, "运行时部署完成：" + esc(DET.root));
-    setTimeout(()=>renderWizard(2), 600);
-  } catch(e){ setResult("#w1-r", false, esc(e.message)); b.disabled=false; b.textContent="开始部署"; }
-}; $("#w1-back").onclick = () => navigateTo("env-list");};
+WIZ_BIND[1] = () => {
+  const rootInput = $("#w1-root");
+  const picker = $("#w1-root-picker");
+  const browseBtn = $("#w1-root-browse");
+  if(browseBtn && picker){
+    browseBtn.onclick = () => picker.click();
+    picker.onchange = (e) => {
+      const files = e.target.files;
+      if(files && files.length > 0){
+        const path = files[0].webkitRelativePath || files[0].path;
+        const dir = path ? (path.includes("/") ? path.split("/")[0] : path.split("\\")[0]) : "";
+        if(dir) rootInput.value = files[0].path ? files[0].path.substring(0, files[0].path.length - (files[0].name.length || 0)) : dir;
+      }
+    };
+  }
+  $("#w1-btn").onclick = async () => {
+    const b = $("#w1-btn"); b.disabled = true; b.textContent = "部署中…";
+    try {
+      await api("/api/deploy", {root: rootInput.value.trim()});
+      DET = await api("/api/detect");
+      setResult("#w1-r", true, "运行时部署完成：" + esc(DET.root));
+      setTimeout(()=>renderWizard(2), 600);
+    } catch(e){ setResult("#w1-r", false, esc(e.message)); b.disabled=false; b.textContent="开始部署"; }
+  };
+  $("#w1-back").onclick = () => navigateTo("env-list");
+};
 
 WIZ[2] = () => `
 <div class="card">

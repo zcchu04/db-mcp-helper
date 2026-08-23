@@ -154,7 +154,9 @@ public final class SetupMain {
     private static JsonObject deploy(JsonObject body) throws IOException {
         String reqRoot = str(body, "root");
         Path root = reqRoot != null && !reqRoot.isBlank() ? Path.of(reqRoot.trim()) : resolveRoot(null);
+        validateInstallRoot(root);
         State st = Installer.deploy(root);
+        Cfg.writeLastRoot(root);
         JsonObject d = new JsonObject();
         d.addProperty("root", root.toString());
         d.add("state", GSON.toJsonTree(st));
@@ -604,6 +606,12 @@ public final class SetupMain {
         if (requested != null && !requested.isBlank()) {
             return Path.of(requested.trim());
         }
+        // 优先使用上次记录的位置，使安装器自身能记住用户修改过的安装目录
+        Path lastRoot = Cfg.readLastRoot();
+        if (lastRoot != null) {
+            return lastRoot;
+        }
+        // 兼容旧逻辑：若默认目录下已有 state，直接沿用
         State st = State.load(Cfg.defaultRoot());
         if (st != null && st.root != null && !st.root.isBlank()) {
             return Path.of(st.root);
@@ -617,6 +625,49 @@ public final class SetupMain {
             throw new IllegalStateException("尚未部署运行时（root 不存在：" + root + "）");
         }
         return root;
+    }
+
+    /** 校验安装根目录：绝对路径、可写、不能位于安装程序自身目录内。 */
+    private static void validateInstallRoot(Path root) {
+        if (!root.isAbsolute()) {
+            throw new IllegalArgumentException("安装根目录必须是绝对路径：" + root);
+        }
+        Path normalized = root.toAbsolutePath().normalize();
+        try {
+            Files.createDirectories(normalized);
+            Path test = normalized.resolve(".write-test-" + System.nanoTime());
+            Files.writeString(test, "ok", StandardCharsets.UTF_8);
+            Files.deleteIfExists(test);
+        } catch (Exception e) {
+            throw new IllegalArgumentException("安装根目录不可写或无法创建：" + normalized + "（" + e.getMessage() + "）");
+        }
+        Path appDir = resolveAppDir();
+        if (appDir != null) {
+            Path appNormalized = appDir.toAbsolutePath().normalize();
+            if (normalized.startsWith(appNormalized)) {
+                throw new IllegalArgumentException("安装根目录不能位于安装程序自身目录内：" + appNormalized);
+            }
+        }
+    }
+
+    /** 定位安装程序自身所在目录；jpackage 形态用系统属性，开发形态尝试定位运行中的 JAR 目录。 */
+    private static Path resolveAppDir() {
+        String jp = System.getProperty("jpackage.app-path");
+        if (jp != null && !jp.isBlank()) {
+            return Path.of(jp).getParent();
+        }
+        try {
+            java.security.CodeSource cs = SetupMain.class.getProtectionDomain().getCodeSource();
+            if (cs != null && cs.getLocation() != null) {
+                Path jar = Path.of(cs.getLocation().toURI());
+                if (Files.isRegularFile(jar)) {
+                    return jar.getParent();
+                }
+            }
+        } catch (Exception ignored) {
+            // 开发模式下可能拿不到，忽略
+        }
+        return null;
     }
 
     private static String str(JsonObject o, String k) {

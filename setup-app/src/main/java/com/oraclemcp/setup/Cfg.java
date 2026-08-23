@@ -1,5 +1,6 @@
 package com.oraclemcp.setup;
 
+import java.io.IOException;
 import java.nio.file.Path;
 
 /**
@@ -32,6 +33,35 @@ public final class Cfg {
     public static Path defaultRoot() {
         String v = System.getProperty("setup.root");
         return v != null && !v.isBlank() ? Path.of(v) : home().resolve(".agent").resolve("mcp").resolve("oracle");
+    }
+
+    /** 记录用户最后选择的安装根目录的标记文件（位于默认根目录下，使安装器自身能记住自定义位置）。 */
+    public static Path lastRootMarkerPath() {
+        return defaultRoot().resolve(".last-root");
+    }
+
+    /** 读取上次使用的安装根目录；无标记或读取失败返回 null。 */
+    public static Path readLastRoot() {
+        Path f = lastRootMarkerPath();
+        if (!java.nio.file.Files.isRegularFile(f)) {
+            return null;
+        }
+        try {
+            String s = java.nio.file.Files.readString(f, java.nio.charset.StandardCharsets.UTF_8).trim();
+            if (s.isBlank()) {
+                return null;
+            }
+            return java.nio.file.Path.of(s);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** 写入/更新上次使用的安装根目录标记。 */
+    public static void writeLastRoot(Path root) throws IOException {
+        Path f = lastRootMarkerPath();
+        java.nio.file.Files.createDirectories(f.getParent());
+        java.nio.file.Files.writeString(f, root.toAbsolutePath().toString(), java.nio.charset.StandardCharsets.UTF_8);
     }
 
     public static Path mcpJsonPath() {
