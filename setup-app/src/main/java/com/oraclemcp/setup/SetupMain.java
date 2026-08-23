@@ -95,10 +95,12 @@ public final class SetupMain {
 
     /** 定位日志目录：优先使用安装目录，其次使用用户主目录 */
     private static Path resolveLogDir() {
-        // jpackage 形态：jpackage.app-path 指向 exe 所在目录
+        // jpackage 形态：jpackage.app-path 指向 exe 文件本身，需取父目录
         String appPath = System.getProperty("jpackage.app-path");
         if (appPath != null && !appPath.isBlank()) {
-            return Path.of(appPath).resolve("logs");
+            Path exe = Path.of(appPath);
+            Path appDir = Files.isRegularFile(exe) ? exe.getParent() : exe;
+            return appDir.resolve("logs");
         }
         // 开发形态：使用用户主目录
         return Path.of(System.getProperty("user.home"), ".oracle-mcp-helper", "logs");
