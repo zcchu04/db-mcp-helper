@@ -69,7 +69,7 @@ public final class SelfTest {
 
             List<String> cmd = List.of(
                     java, "-jar", tapPath, "--log", logPath, "--",
-                    java, "-DconfigFile=\"" + cfgPath + "\"", "-Dtools=db-ping", "-jar", toolkitPath);
+                    java, "-DconfigFile=" + cfgPath, "-Dtools=db-ping", "-jar", toolkitPath);
             log.println("CMD: " + String.join(" ", cmd));
 
             Process p = null;
