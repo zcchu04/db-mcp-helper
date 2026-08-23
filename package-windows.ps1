@@ -195,6 +195,9 @@ function Invoke-Jpackage {
         "--win-shortcut",
         "--win-menu-group", "Oracle MCP Helper"
     )
+    if ($Type -eq "exe") {
+        $args += @("--win-dir-chooser")
+    }
     if ($Type -eq "msi") {
         $args += @("--win-upgrade-uuid", $UpgradeUuid)
     }

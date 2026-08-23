@@ -114,7 +114,8 @@ jobs:
             --main-jar oracle-mcp-setup.jar --main-class com.oraclemcp.setup.SetupMain \
             --runtime-image dist/app-runtime --dest dist/pkg \
             --icon design/icon.ico \
-            --win-menu --win-shortcut --win-menu-group "Oracle MCP Helper"
+            --win-menu --win-shortcut --win-menu-group "Oracle MCP Helper" \
+            --win-dir-chooser
 
       - name: jpackage macOS dmg
         if: runner.os == 'macOS'
