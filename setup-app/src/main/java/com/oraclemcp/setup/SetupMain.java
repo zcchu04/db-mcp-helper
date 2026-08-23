@@ -36,14 +36,14 @@ public final class SetupMain {
     public static void main(String[] args) throws IOException {
         int port = Cfg.port();
         String url = "http://127.0.0.1:" + port;
-        
-        // 检测是否已有实例在运行
-        if (isServerRunning(port)) {
+
+        // 检测是否已有 Oracle MCP Setup 实例在运行（通过探测 /api/detect 接口）
+        if (isOurServerRunning(port)) {
             System.out.println("检测到 Oracle MCP Setup 已在运行，直接打开浏览器...");
             openBrowser(url);
             return;
         }
-        
+
         // 启动新实例
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
         server.createContext("/", SetupMain::handle);
@@ -52,13 +52,20 @@ public final class SetupMain {
         System.out.println("Oracle MCP Setup 已启动：" + url);
         openBrowser(url);
     }
-    
-    /** 检测指定端口是否已有服务在运行 */
-    private static boolean isServerRunning(int port) {
-        try (java.net.Socket socket = new java.net.Socket()) {
-            socket.connect(new InetSocketAddress("127.0.0.1", port), 500);
-            return true;
-        } catch (IOException e) {
+
+    /** 检测指定端口是否已有我们的服务在运行（通过请求 /api/detect 验证） */
+    private static boolean isOurServerRunning(int port) {
+        try {
+            java.net.HttpURLConnection conn = (java.net.HttpURLConnection)
+                new java.net.URL("http://127.0.0.1:" + port + "/api/detect").openConnection();
+            conn.setConnectTimeout(500);
+            conn.setReadTimeout(500);
+            conn.setRequestMethod("GET");
+            int code = conn.getResponseCode();
+            conn.disconnect();
+            // 200 且返回 JSON 说明是我们的服务
+            return code == 200;
+        } catch (Exception e) {
             return false;
         }
     }
