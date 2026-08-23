@@ -108,15 +108,17 @@ jobs:
           cp setup-app/target/oracle-mcp-setup.jar dist/app-staging/
 
       # ---- jpackage 平台特定打包 ----
-      - name: jpackage Windows exe
+      - name: jpackage Windows msi
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          jpackage --type exe --name "Oracle MCP Setup" --app-version 1.0.0 \
+          jpackage --type msi --name oracle-mcp-helper-installer --app-version 1.0.0 \
             --vendor oraclemcp --input dist/app-staging \
             --main-jar oracle-mcp-setup.jar --main-class com.oraclemcp.setup.SetupMain \
             --runtime-image dist/app-runtime --dest dist/pkg \
-            --win-menu --win-shortcut --win-menu-group "Oracle MCP Setup"
+            --icon design/icon.ico \
+            --win-menu --win-shortcut --win-menu-group "Oracle MCP Helper" \
+            --win-upgrade-uuid 6a8b5c2d-9e4f-4a1b-8c7d-3e5f6a9b0c1d
 
       - name: jpackage macOS dmg
         if: runner.os == 'macOS'
@@ -148,7 +150,7 @@ jobs:
         with:
           name: Oracle-MCP-Setup-Windows
           path: |
-            dist/pkg/**/*.exe
+            dist/pkg/**/*.msi
           if-no-files-found: error
 
       - name: Upload macOS artifact
@@ -189,7 +191,7 @@ jobs:
         run: |
           mkdir -p release-files
           # 只复制安装包文件，排除 app-image 内部文件
-          find artifacts -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.deb" \) -exec cp {} release-files/ \;
+          find artifacts -type f \( -name "*.msi" -o -name "*.dmg" -o -name "*.deb" \) -exec cp {} release-files/ \;
           ls -lh release-files/
 
       - name: Create Release
@@ -201,13 +203,13 @@ jobs:
 
             三平台安装包：
 
-            - **Windows**: `Oracle MCP Setup.exe`
+            - **Windows**: `oracle-mcp-helper-installer-1.0.0.msi`
             - **macOS**: `Oracle MCP Setup.dmg`
             - **Linux**: `oracle-mcp-setup_1.0.0-1_amd64.deb` + app-image
 
             ### 安装说明
 
-            - **Windows**: 双击 `.exe` 安装，或解压 app-image 直接运行
+            - **Windows**: 双击 `.msi` 安装，或解压 app-image 直接运行
             - **macOS**: 打开 `.dmg`，拖入应用程序文件夹（首次打开需在系统设置中允许）
             - **Linux**: `sudo dpkg -i oracle-mcp-setup_1.0.0-1_amd64.deb` 或解压 app-image
 
