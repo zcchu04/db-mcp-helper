@@ -29,7 +29,13 @@ jobs:
           java-version: '17'
 
       # ---- 安装平台特定依赖 ----
-      # Inno Setup is pre-installed on windows-latest runners
+      - name: Install Inno Setup (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          winget install --id JRSoftware.InnoSetup --silent --accept-package-agreements --accept-source-agreements
+          # Verify
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /? | Select-Object -First 1
 
       # ---- 克隆并构建 oracle-db-mcp-toolkit ----
       - name: Checkout oracle/mcp (sparse)
@@ -105,17 +111,28 @@ jobs:
           cp setup-app/target/oracle-mcp-setup.jar dist/app-staging/
 
       # ---- jpackage 平台特定打包 ----
-      - name: jpackage Windows exe
+      - name: jpackage Windows app-image + Inno Setup
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          jpackage --type exe --name "Oracle MCP Helper" --app-version 1.0.0 \
+          set -e
+          # Step 1: jpackage app-image
+          jpackage --type app-image --name "Oracle MCP Helper" --app-version 1.0.0 \
             --vendor oraclemcp --input dist/app-staging \
             --main-jar oracle-mcp-setup.jar --main-class com.oraclemcp.setup.SetupMain \
-            --runtime-image dist/app-runtime --dest dist/pkg \
-            --icon design/icon.ico \
-            --win-menu --win-shortcut --win-menu-group "Oracle MCP Helper" \
-            --win-dir-chooser
+            --runtime-image dist/app-runtime --dest dist/app-image \
+            --icon design/icon.ico
+          # Step 2: Inno Setup wrap
+          APP_IMAGE="dist/app-image/Oracle MCP Helper"
+          ISCC="C:/Program Files (x86)/Inno Setup 6/ISCC.exe"
+          mkdir -p dist/pkg
+          "$ISCC" \
+            "/DAppVersion=1.0.0" \
+            "/DAppName=Oracle MCP Helper" \
+            "/DAppDir=$APP_IMAGE" \
+            "/Odist/pkg" \
+            installer/oracle-mcp.iss
+          ls -lh dist/pkg/
 
       - name: jpackage macOS dmg
         if: runner.os == 'macOS'
@@ -202,7 +219,7 @@ jobs:
 
             - **Windows**: `Oracle MCP Helper-1.0.0.exe`
             - **macOS**: `Oracle MCP Setup.dmg`
-            - **Linux**: `oracle-mcp-setup_1.0.0-1_amd64.deb` + app-image
+            - **Linux**: `oracle-mcp-setup_1.0.0-1_amd64.deb`
 
             ### 安装说明
 
