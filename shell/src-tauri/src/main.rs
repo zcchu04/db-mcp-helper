@@ -188,6 +188,23 @@ fn wait_for_backend(port: u16) -> bool {
     false
 }
 
+/// 去掉 Windows 的 `\\?\` verbatim 前缀。Tauri 的 resource_dir() 在 Windows 上会
+/// 返回 `\\?\D:\...` 形式，Java 的 `-jar` 启动器无法解析这种 verbatim 路径，
+/// 会直接退出，导致后端 spawn 成功但秒退。UNC 形式转成 `\\server\share`。
+fn clean_path(p: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let s = p.as_os_str().to_string_lossy();
+        if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{}", rest));
+        }
+        if let Some(rest) = s.strip_prefix(r"\\?\") {
+            return PathBuf::from(rest);
+        }
+    }
+    p.to_path_buf()
+}
+
 /// 解析后端 bundle 目录。Tauri v2 有时会把声明为 "../bundle" 的资源安装到被
 /// sanitize 过的 "_up_/bundle" 子目录（资源路径里的 ".." 被替换成 "_up_"）。
 /// 这里同时探测两种布局，取真正含 jar 的那个，兜底返回 res_dir/bundle。
@@ -220,7 +237,7 @@ fn main() {
     let app = tauri::Builder::default()
         .setup(|app| {
             let res_dir = app.path().resource_dir().expect("resource_dir unavailable");
-            let bundle_dir = find_bundle_dir(&res_dir);
+            let bundle_dir = clean_path(&find_bundle_dir(&res_dir));
             let jar = bundle_dir.join(JAR);
             log_line(&format!("resource_dir = {res_dir:?}"));
             log_line(&format!("jar = {jar:?} exists = {}", jar.exists()));
