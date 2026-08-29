@@ -134,7 +134,7 @@ fn prefer_javaw(java: String) -> String {
 ///   2. `PATH` 上的 `java`（同上）
 ///   3. 打包在安装目录里的 `bundle/runtime/bin/java[.exe]` 兜底
 /// Windows 上每一档都会再尝试替换成 `javaw.exe`。
-fn resolve_java(res_dir: &Path) -> Option<String> {
+fn resolve_java(bundle_dir: &Path) -> Option<String> {
     if let Ok(home) = std::env::var("JAVA_HOME") {
         let p = format!("{}/bin/java", home.replace('\\', "/"));
         if Path::new(&p).exists() && has_httpserver(&p) && java_ge17(&p) {
@@ -151,7 +151,7 @@ fn resolve_java(res_dir: &Path) -> Option<String> {
         }
     }
     for name in ["java.exe", "java"] {
-        let bundled = res_dir.join("bundle").join("runtime").join("bin").join(name);
+        let bundled = bundle_dir.join("runtime").join("bin").join(name);
         if bundled.exists() {
             let raw = bundled.to_string_lossy().into_owned();
             let picked = prefer_javaw(raw.clone());
@@ -188,20 +188,46 @@ fn wait_for_backend(port: u16) -> bool {
     false
 }
 
+/// 解析后端 bundle 目录。Tauri v2 有时会把声明为 "../bundle" 的资源安装到被
+/// sanitize 过的 "_up_/bundle" 子目录（资源路径里的 ".." 被替换成 "_up_"）。
+/// 这里同时探测两种布局，取真正含 jar 的那个，兜底返回 res_dir/bundle。
+fn find_bundle_dir(res_dir: &Path) -> PathBuf {
+    let candidates = [
+        res_dir.join("bundle"),
+        res_dir.join("_up_").join("bundle"),
+        res_dir.join("resources").join("bundle"),
+        res_dir.join("_up_").join("resources").join("bundle"),
+    ];
+    for c in &candidates {
+        if c.join(JAR).exists() {
+            log_line(&format!("bundle dir resolved: {c:?}"));
+            return c.clone();
+        }
+    }
+    // 都没 jar：返回第一个存在的目录，或默认 bundle
+    for c in &candidates {
+        if c.is_dir() {
+            log_line(&format!("bundle dir (no jar) fallback: {c:?}"));
+            return c.clone();
+        }
+    }
+    candidates[0].clone()
+}
+
 fn main() {
     log_line("=== db-mcp-helper (tauri shell) starting ===");
 
     let app = tauri::Builder::default()
         .setup(|app| {
             let res_dir = app.path().resource_dir().expect("resource_dir unavailable");
-            let bundle_dir = res_dir.join("bundle");
+            let bundle_dir = find_bundle_dir(&res_dir);
             let jar = bundle_dir.join(JAR);
             log_line(&format!("resource_dir = {res_dir:?}"));
             log_line(&format!("jar = {jar:?} exists = {}", jar.exists()));
             let bundled_rt = bundle_dir.join("runtime").join("bin");
             log_line(&format!("bundled runtime bin = {bundled_rt:?} exists = {}", bundled_rt.exists()));
 
-            let java = resolve_java(&res_dir).unwrap_or_else(|| "java".to_string());
+            let java = resolve_java(&bundle_dir).unwrap_or_else(|| "java".to_string());
 
             // 先 spawn 后端，失败也不阻断窗口显示（让用户至少看到 WebView，不至于"点了没反应"）
             let child_opt: Option<Child> = match spawn_backend(&java, &jar, &bundle_dir) {
