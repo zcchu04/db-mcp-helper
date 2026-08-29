@@ -27,7 +27,7 @@ jobs:
             bundles: dmg
           - label: Linux
             os: ubuntu-24.04
-            bundles: deb,appimage
+            bundles: deb
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -176,14 +176,12 @@ jobs:
           path: shell/src-tauri/target/release/bundle/dmg/*.dmg
           if-no-files-found: error
 
-      - name: Upload Linux artifacts (Tauri .deb + AppImage)
+      - name: Upload Linux artifact (Tauri .deb)
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
           name: DB-MCP-Helper-Linux
-          path: |
-            shell/src-tauri/target/release/bundle/deb/*.deb
-            shell/src-tauri/target/release/bundle/appimage/*.AppImage
+          path: shell/src-tauri/target/release/bundle/deb/*.deb
           if-no-files-found: error
 
   # ---- 创建 Release（仅 tag 推送时触发） ----
@@ -204,7 +202,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p release-files
-          find artifacts -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.deb" -o -name "*.AppImage" \) -exec cp {} release-files/ \;
+          find artifacts -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.deb" \) -exec cp {} release-files/ \;
           ls -lh release-files/
 
       - name: Create Release
@@ -218,13 +216,13 @@ jobs:
 
             - **Windows**: `DB MCP Helper_*_x64-setup.exe`（Tauri NSIS）
             - **macOS**: `DB MCP Helper_*.dmg`（未签名，首次打开需右键 → 打开）
-            - **Linux**: `db-mcp-helper_*.deb` / `DB MCP Helper_*.AppImage`
+            - **Linux**: `db-mcp-helper_*.deb`
 
             ### 安装说明
 
-            - **Windows**: 双击 `.exe`，向导可选安装目录；快捷方式启动 Tauri 壳
+            - **Windows**: 双击 `.exe`，向导可选安装目录；桌面快捷方式启动 Tauri 壳
             - **macOS**: 拖入 Applications；未做 Developer ID 签名，首次需在 Finder 右键 → 打开
-            - **Linux**: `sudo dpkg -i db-mcp-helper_*.deb`，或直接运行 `.AppImage`
+            - **Linux**: `sudo apt install ./db-mcp-helper_*.deb` 或 `sudo dpkg -i`
 
             ### 首次使用
 
