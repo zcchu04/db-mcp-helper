@@ -109,24 +109,23 @@ jobs:
         shell: bash
         run: |
           set -e
-          # Step 1: jpackage app-image
+          # Step 1: jpackage app-image (name has spaces for display purposes)
           jpackage --type app-image --name "DB MCP Helper" --app-version 1.0.0 \
             --vendor dbmcp --input dist/app-staging \
             --main-jar db-mcp-setup.jar --main-class com.dbmcp.setup.SetupMain \
             --runtime-image dist/runtime --dest dist/app-image \
             --icon design/icon.ico
-          # Step 1.5: 复制启动器到 app-image 根目录（Inno [Icons]/[Run] 都指向 db-mcp-helper.cmd）
+          # Step 2: 复制启动器到 app-image 根目录（Inno [Icons]/[Run] 都指向 db-mcp-helper.cmd）
           cp launcher/db-mcp-helper.cmd "dist/app-image/DB MCP Helper/db-mcp-helper.cmd"
-          # Step 2: Inno Setup wrap
-          APP_IMAGE="dist/app-image/DB MCP Helper"
+          # Step 3: 把 app-image 移到无空格目录，规避 ISCC /D 宏值被按空格拆分的问题
+          #        （ps1 通过 PowerShell 内嵌引号绕过；Git-Bash MSYS 无法可靠还原引号语义）
+          rm -rf dist/app-image/work
+          mv "dist/app-image/DB MCP Helper" dist/app-image/work
+          APP_DIR_WIN=$(cygpath -w "$PWD/dist/app-image/work")
+          # Step 4: Inno Setup wrap（AppVersion/AppName 使用 installer/db-mcp.iss 中 #define 的默认值）
           ISCC="C:/Program Files (x86)/Inno Setup 6/ISCC.exe"
           mkdir -p dist/pkg
-          "$ISCC" \
-            "/DAppVersion=1.0.0" \
-            "/DAppName=DB MCP Helper" \
-            "/DAppDir=$APP_IMAGE" \
-            "/Odist/pkg" \
-            installer/db-mcp.iss
+          "$ISCC" "/DAppDir=$APP_DIR_WIN" "/Odist/pkg" installer/db-mcp.iss
           ls -lh dist/pkg/
 
       - name: jpackage macOS dmg
