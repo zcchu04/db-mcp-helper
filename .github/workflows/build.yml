@@ -1,5 +1,9 @@
 name: Build and Package
 
+# 三平台产物均为 Tauri 桌面壳（内嵌 WebView 加载 Java 后端 http://127.0.0.1:8765）。
+# Java 侧 jlink runtime + fat jar 被 stage 到 shell/bundle/，作为 Tauri resources 打进安装包。
+# Windows: NSIS .exe；macOS: .dmg（未签名，用户需右键打开）；Linux: .deb + .AppImage。
+
 on:
   push:
     branches: [main]
@@ -10,11 +14,20 @@ on:
 
 jobs:
   build:
-    name: Build (${{ matrix.os }})
+    name: Build (${{ matrix.label }})
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
+        include:
+          - label: Windows
+            os: windows-latest
+            bundles: nsis
+          - label: macOS
+            os: macos-latest
+            bundles: dmg
+          - label: Linux
+            os: ubuntu-24.04
+            bundles: deb,appimage
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -28,16 +41,32 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # ---- 安装平台特定依赖 ----
-      - name: Install Inno Setup (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          winget install --id JRSoftware.InnoSetup --silent --accept-package-agreements --accept-source-agreements
-          # Verify
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /? | Select-Object -First 1
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
-      # ---- 克隆并构建 oracle-db-mcp-toolkit ----
+      - name: Set up Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: shell/src-tauri
+
+      - name: Install Linux system deps (webkit2gtk 4.1 + tauri toolchain)
+        if: runner.os == 'Linux'
+        run: |
+          set -e
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential curl wget file \
+            libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev librsvg2-dev \
+            patchelf
+
+      # ---- 构建 Java 后端依赖：oracle-db-mcp-toolkit + mcp-tap ----
       - name: Checkout oracle/mcp (sparse)
         uses: actions/checkout@v4
         with:
@@ -53,14 +82,12 @@ jobs:
           mvn clean package -DskipTests -q
           ls -lh target/
 
-      # ---- 构建 mcp-tap ----
       - name: Build mcp-tap
         shell: bash
         run: mvn package -DskipTests -q -pl mcp-tap
 
-      # ---- jlink 统一运行时（安装器 GUI + MCP 服务器共用） ----
-      # 固定模块集必须包含 jdk.httpserver（setup-app 用 com.sun.net.httpserver），
-      # 否则启动器会 NoClassDefFoundError 崩溃。
+      # ---- jlink 统一运行时（Tauri resources 里的 bundle/runtime 兜底 JDK） ----
+      # 模块集必须含 jdk.httpserver（SetupMain 用 com.sun.net.httpserver）。
       - name: jlink unified runtime
         shell: bash
         run: |
@@ -68,23 +95,14 @@ jobs:
           TOOLKIT=oracle-mcp-src/src/oracle-db-mcp-java-toolkit/target/oracle-db-mcp-toolkit-1.0.0.jar
           MODS=$(jdeps --ignore-missing-deps --print-module-deps "$TOOLKIT")
           FULL="java.base,java.logging,java.xml,java.desktop,java.instrument,java.management,java.naming,java.net.http,java.rmi,java.sql,jdk.net,jdk.security.jgss,jdk.httpserver"
-          # 合并去重
           ALL=$(printf "%s,%s" "$FULL" "$MODS" | tr ',' '\n' | sort -u | tr '\n' ',' | sed 's/,$//')
           echo "Modules: $ALL"
           rm -rf dist/runtime
           jlink --add-modules "$ALL" --output dist/runtime \
             --strip-debug --no-header-files --no-man-pages --compress 2
           du -sh dist/runtime
-          # 压缩
-          cd dist
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            powershell -Command "Compress-Archive -Path runtime -DestinationPath runtime.zip -Force"
-          else
-            zip -qr runtime.zip runtime
-          fi
-          cd ..
 
-      # ---- 资源内嵌 + 构建 setup-app ----
+      # ---- 资源内嵌 + 构建 setup-app fat jar ----
       - name: Stage resources
         shell: bash
         run: |
@@ -96,105 +114,64 @@ jobs:
         shell: bash
         run: mvn package -DskipTests -q -pl setup-app
 
-      - name: Prepare jpackage staging
+      # ---- Tauri 打包：stage bundle → npm install → 生成图标 → tauri build ----
+      - name: Stage Tauri bundle (jar + jlink runtime)
         shell: bash
         run: |
-          rm -rf dist/app-staging dist/pkg
-          mkdir -p dist/app-staging
-          cp setup-app/target/db-mcp-setup.jar dist/app-staging/
+          set -e
+          rm -rf shell/bundle
+          mkdir -p shell/bundle
+          cp setup-app/target/db-mcp-setup.jar shell/bundle/db-mcp-setup.jar
+          cp -r dist/runtime shell/bundle/runtime
+          echo "--- shell/bundle layout ---"
+          ls -lh shell/bundle/
+          du -sh shell/bundle shell/bundle/runtime
 
-      # ---- jpackage 平台特定打包 ----
-      - name: jpackage Windows app-image + Inno Setup
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $AppName = "DB MCP Helper"
-          $AppVersion = "1.0.0"
-          $Root = $env:GITHUB_WORKSPACE
-          # Step 1: jpackage app-image
-          jpackage --type app-image --name $AppName --app-version $AppVersion `
-            --vendor dbmcp --input "$Root\dist\app-staging" `
-            --main-jar db-mcp-setup.jar --main-class com.dbmcp.setup.SetupMain `
-            --runtime-image "$Root\dist\runtime" --dest "$Root\dist\app-image" `
-            --icon "$Root\design\icon.ico"
-          if ($LASTEXITCODE -ne 0) { throw "jpackage app-image failed" }
-          # Step 2: 复制启动器到 app-image 根目录（Inno [Icons]/[Run] 都指向 db-mcp-helper.cmd）
-          $appImage = "$Root\dist\app-image\$AppName"
-          Copy-Item "$Root\launcher\db-mcp-helper.cmd" "$appImage\db-mcp-helper.cmd" -Force
-          # Step 3: 移到无空格目录（Inno 内部对反斜杠 + 空格路径处理不稳，规避）
-          $work = "$Root\dist\app-image\work"
-          if (Test-Path $work) { Remove-Item -Recurse -Force $work }
-          Move-Item $appImage $work
-          # Step 4: 生成 wrapper .iss，把 AppDir 用 #define 硬写进去，再 #include 主脚本。
-          #         ISCC 命令行只接一个纯文件路径，规避 PowerShell argv→cmdline 转换对
-          #         内嵌双引号/反斜杠的破坏（bash + pwsh 5.1 + pwsh 7 都被拆过 token）。
-          #         Wrapper 放在 installer/ 下，相对 SetupIconFile=..\design\icon.ico 与
-          #         主脚本一致，Source 通过 {#AppDir}\*（绝对）取文件。
-          $wrapper = "$Root\installer\inno-wrapper-generated.iss"
-          $issContent = @(
-            '; generated by CI (do not edit)',
-            "#define AppDir `"$work`"",
-            '#include "db-mcp.iss"'
-          ) -join "`r`n"
-          Set-Content -Path $wrapper -Value $issContent -Encoding UTF8
-          # Step 5: Inno Setup wrap（只传输出目录 + wrapper 路径两个安全参数）
-          $ISCC = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-          New-Item -ItemType Directory -Force -Path "$Root\dist\pkg" | Out-Null
-          & $ISCC "/O$Root\dist\pkg" $wrapper
-          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
-          Get-ChildItem "$Root\dist\pkg" -Recurse | ForEach-Object { Write-Host "[OUTPUT] $($_.FullName)" }
-
-      - name: jpackage macOS dmg
-        if: runner.os == 'macOS'
+      - name: Install shell npm deps
+        working-directory: shell
         shell: bash
-        run: |
-          jpackage --type dmg --name "DB MCP Setup" --app-version 1.0.0 \
-            --vendor dbmcp --input dist/app-staging \
-            --main-jar db-mcp-setup.jar --main-class com.dbmcp.setup.SetupMain \
-            --runtime-image dist/runtime --dest dist/pkg
+        run: npm install --no-audit --no-fund
 
-      - name: jpackage Linux deb + app-image
-        if: runner.os == 'Linux'
+      - name: Generate Tauri icon set (all platforms)
+        working-directory: shell
         shell: bash
-        run: |
-          jpackage --type deb --name "db-mcp-setup" --app-version 1.0.0 \
-            --vendor dbmcp --input dist/app-staging \
-            --main-jar db-mcp-setup.jar --main-class com.dbmcp.setup.SetupMain \
-            --runtime-image dist/runtime --dest dist/pkg \
-            --linux-menu-group "Development"
-          jpackage --type app-image --name "DB MCP Setup" --app-version 1.0.0 \
-            --vendor dbmcp --input dist/app-staging \
-            --main-jar db-mcp-setup.jar --main-class com.dbmcp.setup.SetupMain \
-            --runtime-image dist/runtime --dest dist/pkg
+        # 从唯一源图 icon.png 生成 32x32.png / 128x128.png / 128x128@2x.png / icon.icns / icon.ico
+        # （Linux deb 需要 32x32+128x128；macOS dmg 需要 .icns；Windows NSIS 需要 .ico）
+        run: npx tauri icon src-tauri/icons/icon.png
 
-      # ---- 上传构建产物 ----
-      - name: Upload Windows artifact
+      - name: Tauri build
+        working-directory: shell
+        shell: bash
+        run: npx tauri build --bundles "${{ matrix.bundles }}"
+
+      - name: List bundle output
+        shell: bash
+        run: find shell/src-tauri/target/release/bundle -maxdepth 3 -type f | sort
+
+      - name: Upload Windows artifact (Tauri NSIS .exe)
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: DB-MCP-Setup-Windows
-          path: |
-            dist/pkg/**/*.exe
+          name: DB-MCP-Helper-Windows
+          path: shell/src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: error
 
-      - name: Upload macOS artifact
+      - name: Upload macOS artifact (Tauri DMG)
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
-          name: DB-MCP-Setup-macOS
-          path: |
-            dist/pkg/**/*.dmg
+          name: DB-MCP-Helper-macOS
+          path: shell/src-tauri/target/release/bundle/dmg/*.dmg
           if-no-files-found: error
 
-      - name: Upload Linux artifacts
+      - name: Upload Linux artifacts (Tauri .deb + AppImage)
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
-          name: DB-MCP-Setup-Linux
+          name: DB-MCP-Helper-Linux
           path: |
-            dist/pkg/**/*.deb
-            dist/pkg/**/DB MCP Setup/**
+            shell/src-tauri/target/release/bundle/deb/*.deb
+            shell/src-tauri/target/release/bundle/appimage/*.AppImage
           if-no-files-found: error
 
   # ---- 创建 Release（仅 tag 推送时触发） ----
@@ -215,36 +192,33 @@ jobs:
         shell: bash
         run: |
           mkdir -p release-files
-          # 只复制安装包文件，排除 app-image 内部文件
-          find artifacts -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.deb" \) -exec cp {} release-files/ \;
+          find artifacts -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.deb" -o -name "*.AppImage" \) -exec cp {} release-files/ \;
           ls -lh release-files/
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          name: DB MCP Setup ${{ github.ref_name }}
+          name: DB MCP Helper ${{ github.ref_name }}
           body: |
-            ## DB MCP Setup ${{ github.ref_name }}
+            ## DB MCP Helper ${{ github.ref_name }}
 
-            多数据库 MCP 可视化安装器（Oracle + MySQL）三平台安装包：
+            多数据库 MCP 可视化安装器（Oracle + MySQL）三平台安装包，Tauri 桌面壳内嵌 WebView 向导，不再弹系统浏览器。
 
-            - **Windows**: `DB MCP Helper-1.0.0.exe`
-            - **macOS**: `DB MCP Setup.dmg`
-            - **Linux**: `db-mcp-setup_1.0.0-1_amd64.deb`
+            - **Windows**: `DB MCP Helper_*_x64-setup.exe`（Tauri NSIS）
+            - **macOS**: `DB MCP Helper_*.dmg`（未签名，首次打开需右键 → 打开）
+            - **Linux**: `db-mcp-helper_*.deb` / `DB MCP Helper_*.AppImage`
 
             ### 安装说明
 
-            - **Windows**: 双击 `.exe` 安装，支持自定义安装目录
-            - **macOS**: 打开 `.dmg`，拖入应用程序文件夹（首次打开需在系统设置中允许）
-            - **Linux**: `sudo dpkg -i db-mcp-setup_1.0.0-1_amd64.deb` 或解压 app-image
+            - **Windows**: 双击 `.exe`，向导可选安装目录；快捷方式启动 Tauri 壳
+            - **macOS**: 拖入 Applications；未做 Developer ID 签名，首次需在 Finder 右键 → 打开
+            - **Linux**: `sudo dpkg -i db-mcp-helper_*.deb`，或直接运行 `.AppImage`
 
             ### 首次使用
 
-            1. 启动安装器，浏览器自动打开向导
-            2. 部署运行时（内嵌精简 JRE，目标机无需安装 Java）
-            3. 添加数据库环境（支持粘贴 Spring 配置片段）
-            4. 自检连通性
-            5. 注册到 AI 平台（QoderWork / IDEA Qoder / Claude Code / Cursor 等）
+            1. 启动 Tauri 壳（自动 spawn Java 后端 `db-mcp-setup.jar --no-browser`）
+            2. WebView 打开部署向导（http://127.0.0.1:8765）
+            3. 添加数据库环境（支持粘贴 Spring 配置片段）→ 自检 → 注册到 AI 平台
           files: |
             release-files/*
           draft: false
