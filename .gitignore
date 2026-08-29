@@ -1,6 +1,7 @@
 # 构建中间产物（jlink 运行时、打包输入、产物）
 dist/
 *.bak-*
+installer/inno-wrapper-generated.iss
 
 # Maven 构建产物
 **/target/
