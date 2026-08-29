@@ -58,38 +58,31 @@ jobs:
         shell: bash
         run: mvn package -DskipTests -q -pl mcp-tap
 
-      # ---- jlink MCP 精简运行时（供 MCP 服务器使用） ----
-      - name: jlink MCP runtime
+      # ---- jlink 统一运行时（安装器 GUI + MCP 服务器共用） ----
+      # 固定模块集必须包含 jdk.httpserver（setup-app 用 com.sun.net.httpserver），
+      # 否则启动器会 NoClassDefFoundError 崩溃。
+      - name: jlink unified runtime
         shell: bash
         run: |
           set -e
           TOOLKIT=oracle-mcp-src/src/oracle-db-mcp-java-toolkit/target/oracle-db-mcp-toolkit-1.0.0.jar
           MODS=$(jdeps --ignore-missing-deps --print-module-deps "$TOOLKIT")
-          FULL="java.base,java.logging,java.xml,java.desktop,java.instrument,java.management,java.naming,java.net.http,java.rmi,java.sql,jdk.net,jdk.security.jgss"
+          FULL="java.base,java.logging,java.xml,java.desktop,java.instrument,java.management,java.naming,java.net.http,java.rmi,java.sql,jdk.net,jdk.security.jgss,jdk.httpserver"
           # 合并去重
           ALL=$(printf "%s,%s" "$FULL" "$MODS" | tr ',' '\n' | sort -u | tr '\n' ',' | sed 's/,$//')
           echo "Modules: $ALL"
-          rm -rf dist/mcp-runtime
-          jlink --add-modules "$ALL" --output dist/mcp-runtime \
+          rm -rf dist/runtime
+          jlink --add-modules "$ALL" --output dist/runtime \
             --strip-debug --no-header-files --no-man-pages --compress 2
-          du -sh dist/mcp-runtime
+          du -sh dist/runtime
           # 压缩
           cd dist
           if [ "${{ runner.os }}" = "Windows" ]; then
-            powershell -Command "Compress-Archive -Path mcp-runtime -DestinationPath mcp-runtime.zip -Force"
+            powershell -Command "Compress-Archive -Path runtime -DestinationPath runtime.zip -Force"
           else
-            zip -qr mcp-runtime.zip mcp-runtime
+            zip -qr runtime.zip runtime
           fi
           cd ..
-
-      # ---- jlink 安装器自身运行时 ----
-      - name: jlink app runtime
-        shell: bash
-        run: |
-          rm -rf dist/app-runtime
-          jlink --add-modules java.base,java.desktop,java.logging,jdk.httpserver \
-            --output dist/app-runtime --strip-debug --no-header-files --no-man-pages --compress 2
-          du -sh dist/app-runtime
 
       # ---- 资源内嵌 + 构建 setup-app ----
       - name: Stage resources
@@ -108,7 +101,7 @@ jobs:
         run: |
           rm -rf dist/app-staging dist/pkg
           mkdir -p dist/app-staging
-          cp setup-app/target/oracle-mcp-setup.jar dist/app-staging/
+          cp setup-app/target/db-mcp-setup.jar dist/app-staging/
 
       # ---- jpackage 平台特定打包 ----
       - name: jpackage Windows app-image + Inno Setup
@@ -117,52 +110,54 @@ jobs:
         run: |
           set -e
           # Step 1: jpackage app-image
-          jpackage --type app-image --name "Oracle MCP Helper" --app-version 1.0.0 \
-            --vendor oraclemcp --input dist/app-staging \
-            --main-jar oracle-mcp-setup.jar --main-class com.oraclemcp.setup.SetupMain \
-            --runtime-image dist/app-runtime --dest dist/app-image \
+          jpackage --type app-image --name "DB MCP Helper" --app-version 1.0.0 \
+            --vendor dbmcp --input dist/app-staging \
+            --main-jar db-mcp-setup.jar --main-class com.dbmcp.setup.SetupMain \
+            --runtime-image dist/runtime --dest dist/app-image \
             --icon design/icon.ico
+          # Step 1.5: 复制启动器到 app-image 根目录（Inno [Icons]/[Run] 都指向 db-mcp-helper.cmd）
+          cp launcher/db-mcp-helper.cmd "dist/app-image/DB MCP Helper/db-mcp-helper.cmd"
           # Step 2: Inno Setup wrap
-          APP_IMAGE="dist/app-image/Oracle MCP Helper"
+          APP_IMAGE="dist/app-image/DB MCP Helper"
           ISCC="C:/Program Files (x86)/Inno Setup 6/ISCC.exe"
           mkdir -p dist/pkg
           "$ISCC" \
             "/DAppVersion=1.0.0" \
-            "/DAppName=Oracle MCP Helper" \
+            "/DAppName=DB MCP Helper" \
             "/DAppDir=$APP_IMAGE" \
             "/Odist/pkg" \
-            installer/oracle-mcp.iss
+            installer/db-mcp.iss
           ls -lh dist/pkg/
 
       - name: jpackage macOS dmg
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          jpackage --type dmg --name "Oracle MCP Setup" --app-version 1.0.0 \
-            --vendor oraclemcp --input dist/app-staging \
-            --main-jar oracle-mcp-setup.jar --main-class com.oraclemcp.setup.SetupMain \
-            --runtime-image dist/app-runtime --dest dist/pkg
+          jpackage --type dmg --name "DB MCP Setup" --app-version 1.0.0 \
+            --vendor dbmcp --input dist/app-staging \
+            --main-jar db-mcp-setup.jar --main-class com.dbmcp.setup.SetupMain \
+            --runtime-image dist/runtime --dest dist/pkg
 
       - name: jpackage Linux deb + app-image
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          jpackage --type deb --name "oracle-mcp-setup" --app-version 1.0.0 \
-            --vendor oraclemcp --input dist/app-staging \
-            --main-jar oracle-mcp-setup.jar --main-class com.oraclemcp.setup.SetupMain \
-            --runtime-image dist/app-runtime --dest dist/pkg \
+          jpackage --type deb --name "db-mcp-setup" --app-version 1.0.0 \
+            --vendor dbmcp --input dist/app-staging \
+            --main-jar db-mcp-setup.jar --main-class com.dbmcp.setup.SetupMain \
+            --runtime-image dist/runtime --dest dist/pkg \
             --linux-menu-group "Development"
-          jpackage --type app-image --name "Oracle MCP Setup" --app-version 1.0.0 \
-            --vendor oraclemcp --input dist/app-staging \
-            --main-jar oracle-mcp-setup.jar --main-class com.oraclemcp.setup.SetupMain \
-            --runtime-image dist/app-runtime --dest dist/pkg
+          jpackage --type app-image --name "DB MCP Setup" --app-version 1.0.0 \
+            --vendor dbmcp --input dist/app-staging \
+            --main-jar db-mcp-setup.jar --main-class com.dbmcp.setup.SetupMain \
+            --runtime-image dist/runtime --dest dist/pkg
 
       # ---- 上传构建产物 ----
       - name: Upload Windows artifact
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: Oracle-MCP-Setup-Windows
+          name: DB-MCP-Setup-Windows
           path: |
             dist/pkg/**/*.exe
           if-no-files-found: error
@@ -171,7 +166,7 @@ jobs:
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
-          name: Oracle-MCP-Setup-macOS
+          name: DB-MCP-Setup-macOS
           path: |
             dist/pkg/**/*.dmg
           if-no-files-found: error
@@ -180,10 +175,10 @@ jobs:
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
-          name: Oracle-MCP-Setup-Linux
+          name: DB-MCP-Setup-Linux
           path: |
             dist/pkg/**/*.deb
-            dist/pkg/**/Oracle MCP Setup/**
+            dist/pkg/**/DB MCP Setup/**
           if-no-files-found: error
 
   # ---- 创建 Release（仅 tag 推送时触发） ----
@@ -211,21 +206,21 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          name: Oracle MCP Setup ${{ github.ref_name }}
+          name: DB MCP Setup ${{ github.ref_name }}
           body: |
-            ## Oracle MCP Setup ${{ github.ref_name }}
+            ## DB MCP Setup ${{ github.ref_name }}
 
-            三平台安装包：
+            多数据库 MCP 可视化安装器（Oracle + MySQL）三平台安装包：
 
-            - **Windows**: `Oracle MCP Helper-1.0.0.exe`
-            - **macOS**: `Oracle MCP Setup.dmg`
-            - **Linux**: `oracle-mcp-setup_1.0.0-1_amd64.deb`
+            - **Windows**: `DB MCP Helper-1.0.0.exe`
+            - **macOS**: `DB MCP Setup.dmg`
+            - **Linux**: `db-mcp-setup_1.0.0-1_amd64.deb`
 
             ### 安装说明
 
             - **Windows**: 双击 `.exe` 安装，支持自定义安装目录
             - **macOS**: 打开 `.dmg`，拖入应用程序文件夹（首次打开需在系统设置中允许）
-            - **Linux**: `sudo dpkg -i oracle-mcp-setup_1.0.0-1_amd64.deb` 或解压 app-image
+            - **Linux**: `sudo dpkg -i db-mcp-setup_1.0.0-1_amd64.deb` 或解压 app-image
 
             ### 首次使用
 
@@ -233,7 +228,7 @@ jobs:
             2. 部署运行时（内嵌精简 JRE，目标机无需安装 Java）
             3. 添加数据库环境（支持粘贴 Spring 配置片段）
             4. 自检连通性
-            5. 注册到 AI 平台（QoderWork / Claude Code / Cursor 等）
+            5. 注册到 AI 平台（QoderWork / IDEA Qoder / Claude Code / Cursor 等）
           files: |
             release-files/*
           draft: false
