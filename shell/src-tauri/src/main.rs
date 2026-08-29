@@ -94,7 +94,7 @@ fn wait_for_backend(port: u16) {
 }
 
 fn main() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .setup(|app| {
             let res_dir = app
                 .path()
@@ -126,12 +126,14 @@ fn main() {
             app.manage(Backend(child));
             Ok(())
         })
-        .run(tauri::generate_context!(), |app, event| {
-            if let tauri::RunEvent::Exit = event {
-                if let Some(b) = app.try_state::<Backend>() {
-                    let _ = b.0.kill();
-                }
+        .build(tauri::generate_context!())
+        .expect("error while building DB MCP Helper");
+
+    app.run(|app_handle, event| {
+        if let tauri::RunEvent::Exit = event {
+            if let Some(b) = app_handle.try_state::<Backend>() {
+                let _ = b.0.kill();
             }
-        })
-        .expect("error while running DB MCP Helper");
+        }
+    });
 }
