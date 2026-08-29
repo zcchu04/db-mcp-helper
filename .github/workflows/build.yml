@@ -106,27 +106,32 @@ jobs:
       # ---- jpackage 平台特定打包 ----
       - name: jpackage Windows app-image + Inno Setup
         if: runner.os == 'Windows'
-        shell: bash
+        shell: pwsh
         run: |
-          set -e
-          # Step 1: jpackage app-image (name has spaces for display purposes)
-          jpackage --type app-image --name "DB MCP Helper" --app-version 1.0.0 \
-            --vendor dbmcp --input dist/app-staging \
-            --main-jar db-mcp-setup.jar --main-class com.dbmcp.setup.SetupMain \
-            --runtime-image dist/runtime --dest dist/app-image \
-            --icon design/icon.ico
+          $ErrorActionPreference = "Stop"
+          $AppName = "DB MCP Helper"
+          $AppVersion = "1.0.0"
+          $Root = $env:GITHUB_WORKSPACE
+          # Step 1: jpackage app-image
+          jpackage --type app-image --name $AppName --app-version $AppVersion `
+            --vendor dbmcp --input "$Root\dist\app-staging" `
+            --main-jar db-mcp-setup.jar --main-class com.dbmcp.setup.SetupMain `
+            --runtime-image "$Root\dist\runtime" --dest "$Root\dist\app-image" `
+            --icon "$Root\design\icon.ico"
+          if ($LASTEXITCODE -ne 0) { throw "jpackage app-image failed" }
           # Step 2: 复制启动器到 app-image 根目录（Inno [Icons]/[Run] 都指向 db-mcp-helper.cmd）
-          cp launcher/db-mcp-helper.cmd "dist/app-image/DB MCP Helper/db-mcp-helper.cmd"
-          # Step 3: 把 app-image 移到无空格目录，规避 ISCC /D 宏值被按空格拆分的问题
-          #        （ps1 通过 PowerShell 内嵌引号绕过；Git-Bash MSYS 无法可靠还原引号语义）
-          rm -rf dist/app-image/work
-          mv "dist/app-image/DB MCP Helper" dist/app-image/work
-          APP_DIR_WIN=$(cygpath -w "$PWD/dist/app-image/work")
-          # Step 4: Inno Setup wrap（AppVersion/AppName 使用 installer/db-mcp.iss 中 #define 的默认值）
-          ISCC="C:/Program Files (x86)/Inno Setup 6/ISCC.exe"
-          mkdir -p dist/pkg
-          "$ISCC" "/DAppDir=$APP_DIR_WIN" "/Odist/pkg" installer/db-mcp.iss
-          ls -lh dist/pkg/
+          $appImage = "$Root\dist\app-image\$AppName"
+          Copy-Item "$Root\launcher\db-mcp-helper.cmd" "$appImage\db-mcp-helper.cmd" -Force
+          # Step 3: 移到无空格目录（规避 PowerShell 传参时内嵌空格引发 ISCC 拆分）
+          $work = "$Root\dist\app-image\work"
+          if (Test-Path $work) { Remove-Item -Recurse -Force $work }
+          Move-Item $appImage $work
+          # Step 4: Inno Setup wrap（内嵌 `" 转义双引号，与 package-windows.ps1 保持一致）
+          $ISCC = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          New-Item -ItemType Directory -Force -Path "$Root\dist\pkg" | Out-Null
+          & $ISCC "/DAppVersion=$AppVersion" "/DAppName=`"$AppName`"" "/DAppDir=`"$work`"" "/O$Root\dist\pkg" "$Root\installer\db-mcp.iss"
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+          Get-ChildItem "$Root\dist\pkg" -Recurse | ForEach-Object { Write-Host "[OUTPUT] $($_.FullName)" }
 
       - name: jpackage macOS dmg
         if: runner.os == 'macOS'
