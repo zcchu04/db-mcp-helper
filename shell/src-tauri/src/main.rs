@@ -1,8 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::net::TcpStream;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command};
+use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
@@ -13,7 +14,9 @@ const JAR: &str = "db-mcp-setup.jar";
 const NO_BROWSER: &str = "--no-browser";
 
 /// Owns the spawned Java backend process so we can terminate it on app exit.
-struct Backend(Child);
+/// Uses `Mutex<Option<Child>>` because `Child::kill` needs `&mut` but Tauri
+/// managed-state only hands out shared references.
+struct Backend(Mutex<Option<Child>>);
 
 /// True if this `java` is a JDK that exposes the `jdk.httpserver` module
 /// (our setup backend depends on `com.sun.net.httpserver.HttpServer`).
@@ -123,7 +126,7 @@ fn main() {
                 .build()
                 .expect("failed to build main window");
 
-            app.manage(Backend(child));
+            app.manage(Backend(Mutex::new(Some(child))));
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -132,7 +135,11 @@ fn main() {
     app.run(|app_handle, event| {
         if let tauri::RunEvent::Exit = event {
             if let Some(b) = app_handle.try_state::<Backend>() {
-                let _ = b.0.kill();
+                if let Ok(mut guard) = b.0.lock() {
+                    if let Some(mut child) = guard.take() {
+                        let _ = child.kill();
+                    }
+                }
             }
         }
     });
