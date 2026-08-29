@@ -85,7 +85,7 @@ public final class OracleAdapter implements DbAdapter {
     public String renderConfig(String env, String url, String user, String password) {
         return """
                 # DB MCP Helper 环境配置（由 db-mcp-setup 生成）
-                # 修改后需在 AI 平台的连接器管理中对 %s%s 执行 disable→enable 才会重载
+                # 修改后需在 AI 平台的连接器管理中对 %s 执行 disable→enable 才会重载
                 dataSources:
                   %s:
                     url: "%s"

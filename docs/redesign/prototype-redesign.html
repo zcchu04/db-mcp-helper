@@ -1,0 +1,1529 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DB MCP Helper · Redesign Prototype</title>
+<style>
+/* ==========================================================================
+   Design Tokens
+   ========================================================================== */
+:root {
+  --bg-canvas:#f8fafc; --bg-elevated:#ffffff; --bg-inset:#f1f5f9; --bg-hover:#eff6ff;
+  --border:#e2e8f0; --border-strong:#cbd5e1;
+  --text-primary:#0f172a; --text-secondary:#475569; --text-muted:#94a3b8;
+  --brand:#2563eb; --brand-hover:#1d4ed8; --brand-soft:#dbeafe;
+  --success:#059669; --success-soft:#d1fae5;
+  --warning:#d97706; --warning-soft:#fef3c7;
+  --danger:#dc2626;  --danger-soft:#fee2e2;
+  --info:#0891b2;    --info-soft:#cffafe;
+  --sh-card: 0 1px 2px rgba(15,23,42,.04), 0 1px 3px rgba(15,23,42,.06);
+  --sh-pop:  0 8px 24px rgba(15,23,42,.10), 0 2px 6px rgba(15,23,42,.05);
+  --r-sm:6px; --r-md:10px; --r-lg:14px; --r-pill:999px;
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px; --s7:48px;
+  --sidebar-w:240px; --sidebar-w-collapsed:64px; --topbar-h:48px;
+  --font-ui:"Inter","-apple-system","Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+  --font-mono:"JetBrains Mono","Cascadia Code","Consolas",monospace;
+}
+html[data-theme="dark"] {
+  --bg-canvas:#0b1220; --bg-elevated:#111827; --bg-inset:#0f172a; --bg-hover:#1e293b;
+  --border:#1f2937; --border-strong:#334155;
+  --text-primary:#f8fafc; --text-secondary:#cbd5e1; --text-muted:#94a3b8;
+  --brand:#3b82f6; --brand-hover:#60a5fa; --brand-soft:#1e3a8a;
+  --success:#10b981; --success-soft:#064e3b;
+  --warning:#f59e0b; --warning-soft:#78350f;
+  --danger:#ef4444;  --danger-soft:#7f1d1d;
+  --info:#06b6d4;    --info-soft:#164e63;
+  --sh-card: 0 1px 2px rgba(0,0,0,.3);
+  --sh-pop:  0 8px 24px rgba(0,0,0,.5);
+}
+
+/* ==========================================================================
+   Base
+   ========================================================================== */
+*,*::before,*::after{ box-sizing:border-box; }
+html,body{ height:100%; }
+body{
+  margin:0; font-family:var(--font-ui); font-size:13px; line-height:1.6;
+  background:var(--bg-canvas); color:var(--text-primary); overflow:hidden;
+  -webkit-font-smoothing:antialiased;
+}
+a{ color:inherit; text-decoration:none; }
+button{ font-family:inherit; font-size:inherit; }
+input,select,textarea{ font-family:inherit; }
+
+/* ==========================================================================
+   App shell
+   ========================================================================== */
+#app{ display:flex; flex-direction:column; height:100vh; }
+.topbar{
+  height:var(--topbar-h); display:flex; align-items:center; gap:var(--s3);
+  padding:0 var(--s5); background:var(--bg-elevated); border-bottom:1px solid var(--border);
+  flex-shrink:0; user-select:none;
+}
+.topbar .brand{ display:flex; align-items:center; gap:var(--s2); font-weight:600; font-size:14px; }
+.topbar .brand-mark{ width:24px; height:24px; border-radius:var(--r-sm); background:linear-gradient(135deg,var(--brand),#7c3aed); display:grid; place-items:center; color:#fff; }
+.topbar .brand-mark svg{ width:14px; height:14px; }
+.topbar .title-crumb{ color:var(--text-secondary); font-size:13px; padding-left:var(--s3); border-left:1px solid var(--border); height:20px; line-height:20px; }
+.topbar .spacer{ flex:1; }
+.topbar .cmd-btn{
+  display:flex; align-items:center; gap:var(--s2); height:28px; padding:0 var(--s3);
+  background:var(--bg-inset); border:1px solid var(--border); border-radius:var(--r-sm);
+  color:var(--text-muted); cursor:pointer; font-size:12.5px;
+}
+.topbar .cmd-btn:hover{ border-color:var(--border-strong); color:var(--text-secondary); }
+.topbar .cmd-btn kbd{ font-family:var(--font-mono); font-size:10.5px; padding:1px 5px; background:var(--bg-elevated); border:1px solid var(--border); border-radius:4px; }
+.icon-btn{
+  width:32px; height:32px; display:grid; place-items:center; background:transparent;
+  border:none; border-radius:var(--r-sm); color:var(--text-secondary); cursor:pointer;
+}
+.icon-btn:hover{ background:var(--bg-hover); color:var(--brand); }
+.icon-btn svg{ width:16px; height:16px; }
+
+.layout{ display:flex; flex:1; min-height:0; }
+
+/* Sidebar */
+.sidebar{
+  width:var(--sidebar-w); background:var(--bg-elevated); border-right:1px solid var(--border);
+  display:flex; flex-direction:column; padding:var(--s3) var(--s2); flex-shrink:0; overflow:hidden;
+  transition:width 200ms cubic-bezier(.4,0,.2,1);
+}
+.sidebar.collapsed{ width:var(--sidebar-w-collapsed); }
+.side-group{ margin-bottom:var(--s4); }
+.side-label{ font-size:10.5px; color:var(--text-muted); text-transform:uppercase; letter-spacing:.5px; padding:var(--s2) var(--s3); font-weight:600; }
+.sidebar.collapsed .side-label{ opacity:0; }
+.side-item{
+  display:flex; align-items:center; gap:var(--s3); padding:0 var(--s3); height:34px; border-radius:var(--r-sm);
+  color:var(--text-secondary); cursor:pointer; font-size:13px; margin-bottom:2px; white-space:nowrap; overflow:hidden;
+}
+.side-item:hover{ background:var(--bg-hover); color:var(--brand); }
+.side-item.active{ background:var(--brand-soft); color:var(--brand); font-weight:500; }
+html[data-theme="dark"] .side-item.active{ background:rgba(59,130,246,.15); }
+.side-item svg{ width:16px; height:16px; flex-shrink:0; }
+.sidebar.collapsed .side-item{ justify-content:center; padding:0; }
+.sidebar.collapsed .side-item .side-text{ display:none; }
+.side-bottom{ margin-top:auto; }
+
+/* Main */
+.main{ flex:1; overflow-y:auto; min-width:0; }
+.page{ padding:var(--s6) var(--s7); max-width:1440px; margin:0 auto; }
+.page-title-row{ display:flex; align-items:center; justify-content:space-between; margin-bottom:var(--s5); gap:var(--s4); flex-wrap:wrap; }
+.page-title{ font-size:20px; font-weight:600; letter-spacing:-.01em; }
+.page-sub{ color:var(--text-secondary); font-size:13px; margin-top:2px; }
+
+/* ==========================================================================
+   Buttons
+   ========================================================================== */
+.btn{
+  display:inline-flex; align-items:center; gap:6px; height:32px; padding:0 var(--s3);
+  border-radius:var(--r-sm); font-size:12.5px; font-weight:500; border:1px solid transparent;
+  cursor:pointer; transition:all 120ms; white-space:nowrap; user-select:none;
+}
+.btn svg{ width:14px; height:14px; }
+.btn.md{ height:36px; padding:0 var(--s4); font-size:13px; }
+.btn.sm{ height:26px; padding:0 var(--s2); font-size:12px; }
+.btn.primary{ background:var(--brand); color:#fff; }
+.btn.primary:hover{ background:var(--brand-hover); }
+.btn.secondary{ background:var(--bg-elevated); color:var(--text-primary); border-color:var(--border-strong); }
+.btn.secondary:hover{ background:var(--bg-hover); border-color:var(--brand); color:var(--brand); }
+.btn.ghost{ background:transparent; color:var(--brand); }
+.btn.ghost:hover{ background:var(--brand-soft); }
+.btn.danger{ background:var(--danger); color:#fff; }
+.btn.danger:hover{ background:#b91c1c; }
+.btn.danger-ghost{ background:transparent; color:var(--danger); border-color:var(--danger); }
+.btn.danger-ghost:hover{ background:var(--danger-soft); }
+.btn[disabled]{ opacity:.5; cursor:not-allowed; }
+.btn.loading::before{ content:""; width:12px; height:12px; border:2px solid currentColor; border-right-color:transparent; border-radius:50%; animation:spin .8s linear infinite; }
+@keyframes spin{ to{ transform:rotate(360deg); } }
+
+/* ==========================================================================
+   Form controls
+   ========================================================================== */
+.field{ margin-bottom:var(--s4); }
+.field-label{ display:flex; align-items:center; justify-content:space-between; font-size:12px; color:var(--text-secondary); margin-bottom:6px; font-weight:500; }
+.field-label .req{ color:var(--danger); margin-left:2px; }
+.field-hint{ font-size:11.5px; color:var(--text-muted); margin-top:4px; line-height:1.5; }
+.input,.select,.textarea{
+  width:100%; height:32px; padding:0 var(--s3); font-size:13px; color:var(--text-primary);
+  background:var(--bg-elevated); border:1px solid var(--border-strong); border-radius:var(--r-sm);
+  outline:none; transition:border-color 120ms, box-shadow 120ms;
+}
+.textarea{ height:auto; min-height:80px; padding:8px var(--s3); font-family:var(--font-mono); font-size:12px; line-height:1.5; resize:vertical; }
+.input:focus,.select:focus,.textarea:focus{ border-color:var(--brand); box-shadow:0 0 0 3px rgba(37,99,235,.15); }
+.input.err{ border-color:var(--danger); }
+.field-error{ font-size:11.5px; color:var(--danger); margin-top:4px; }
+.row{ display:grid; grid-template-columns:1fr 1fr; gap:var(--s4); }
+.row-3{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:var(--s4); }
+.row-wide{ display:grid; grid-template-columns:2fr 1fr; gap:var(--s4); }
+
+/* Toggle */
+.switch{ position:relative; width:36px; height:20px; background:var(--border-strong); border-radius:var(--r-pill); cursor:pointer; transition:background 150ms; flex-shrink:0; }
+.switch::after{ content:""; position:absolute; top:2px; left:2px; width:16px; height:16px; background:#fff; border-radius:50%; transition:transform 150ms; }
+.switch.on{ background:var(--brand); }
+.switch.on::after{ transform:translateX(16px); }
+
+/* Segmented */
+.seg{ display:inline-flex; background:var(--bg-inset); border:1px solid var(--border); border-radius:var(--r-sm); padding:2px; gap:2px; }
+.seg button{ height:24px; padding:0 var(--s3); background:transparent; border:none; border-radius:4px; font-size:12px; color:var(--text-secondary); cursor:pointer; }
+.seg button.on{ background:var(--bg-elevated); color:var(--text-primary); box-shadow:0 1px 2px rgba(0,0,0,.05); font-weight:500; }
+.seg button:not(.on):hover{ color:var(--text-primary); }
+
+/* ==========================================================================
+   Cards
+   ========================================================================== */
+.card{ background:var(--bg-elevated); border:1px solid var(--border); border-radius:var(--r-md); padding:var(--s5); box-shadow:var(--sh-card); }
+.card.tight{ padding:var(--s4); }
+.card + .card{ margin-top:var(--s5); }
+.card-header{ display:flex; align-items:center; justify-content:space-between; gap:var(--s3); margin-bottom:var(--s4); }
+.card-header h3{ margin:0; font-size:14px; font-weight:600; display:flex; align-items:center; gap:6px; }
+.card-header .actions{ display:flex; gap:var(--s2); align-items:center; }
+.card-desc{ color:var(--text-secondary); font-size:12.5px; margin:-1 * var(--s2) 0 var(--s4); line-height:1.6; }
+
+/* ==========================================================================
+   Badges / Chips / Tags
+   ========================================================================== */
+.badge{ display:inline-flex; align-items:center; gap:4px; height:20px; padding:0 var(--s2); border-radius:var(--r-pill); font-size:11px; font-weight:500; white-space:nowrap; }
+.badge.ok{ background:var(--success-soft); color:var(--success); }
+.badge.no{ background:var(--danger-soft); color:var(--danger); }
+.badge.warn{ background:var(--warning-soft); color:var(--warning); }
+.badge.info{ background:var(--info-soft); color:var(--info); }
+.badge.neutral{ background:var(--bg-inset); color:var(--text-secondary); }
+.badge .dot{ width:6px; height:6px; border-radius:50%; background:currentColor; }
+.chip{ display:inline-flex; align-items:center; gap:4px; height:22px; padding:0 var(--s2); background:var(--bg-inset); color:var(--text-secondary); border-radius:var(--r-sm); font-size:11.5px; }
+.chip .x{ cursor:pointer; color:var(--text-muted); }
+.chip .x:hover{ color:var(--danger); }
+.chip-add{ display:inline-flex; align-items:center; gap:4px; height:22px; padding:0 var(--s2); background:transparent; border:1px dashed var(--border-strong); color:var(--text-muted); border-radius:var(--r-sm); font-size:11.5px; cursor:pointer; }
+.chip-add:hover{ border-color:var(--brand); color:var(--brand); }
+
+/* ==========================================================================
+   Instance card
+   ========================================================================== */
+.inst-grid{ display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:var(--s4); }
+.inst-card{
+  position:relative; background:var(--bg-elevated); border:1px solid var(--border); border-radius:var(--r-md);
+  padding:var(--s4); cursor:pointer; transition:all 150ms;
+}
+.inst-card:hover{ border-color:var(--brand); box-shadow:var(--sh-pop); transform:translateY(-1px); }
+.inst-card .head{ display:flex; align-items:center; gap:var(--s2); margin-bottom:var(--s2); }
+.db-icon{ width:20px; height:20px; display:grid; place-items:center; border-radius:5px; font-size:11px; font-weight:700; color:#fff; }
+.db-icon.oracle{ background:#c74634; }
+.db-icon.mysql{ background:#00758f; }
+.inst-card .env{ font-weight:600; font-size:14px; }
+.inst-card .alias{ color:var(--text-muted); font-size:11.5px; }
+.inst-card .meta{ color:var(--text-secondary); font-size:12px; font-family:var(--font-mono); margin:6px 0 var(--s3); word-break:break-all; }
+.inst-card .badges{ display:flex; flex-wrap:wrap; gap:6px; margin-bottom:var(--s3); }
+.inst-card .quick{ display:flex; gap:var(--s2); padding-top:var(--s2); border-top:1px solid var(--border); }
+.inst-card .kebab{ position:absolute; top:12px; right:12px; opacity:0; transition:opacity 150ms; }
+.inst-card:hover .kebab{ opacity:1; }
+
+/* ==========================================================================
+   Table
+   ========================================================================== */
+.tbl{ width:100%; border-collapse:collapse; font-size:13px; }
+.tbl th{ text-align:left; font-weight:500; color:var(--text-secondary); padding:8px 12px; border-bottom:1px solid var(--border); font-size:11.5px; text-transform:uppercase; letter-spacing:.3px; }
+.tbl td{ padding:10px 12px; border-bottom:1px solid var(--border); vertical-align:middle; }
+.tbl tr:last-child td{ border-bottom:none; }
+.tbl tbody tr:hover{ background:var(--bg-hover); }
+.tbl tr.clickable{ cursor:pointer; }
+.tbl .num{ font-family:var(--font-mono); font-size:12px; color:var(--text-secondary); }
+
+/* ==========================================================================
+   Metrics (overview)
+   ========================================================================== */
+.metrics{ display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:var(--s4); margin-bottom:var(--s5); }
+.metric{ background:var(--bg-elevated); border:1px solid var(--border); border-radius:var(--r-md); padding:var(--s4) var(--s5); }
+.metric .label{ color:var(--text-secondary); font-size:12px; }
+.metric .value{ font-size:26px; font-weight:600; margin-top:2px; letter-spacing:-.02em; }
+.metric.tone-brand .value{ color:var(--brand); }
+.metric.tone-warn .value{ color:var(--warning); }
+.metric.tone-danger .value{ color:var(--danger); }
+.metric.tone-success .value{ color:var(--success); }
+
+/* ==========================================================================
+   Stepper
+   ========================================================================== */
+.stepper{ display:flex; align-items:center; gap:var(--s3); margin-bottom:var(--s6); }
+.step{ display:flex; align-items:center; gap:var(--s2); padding:var(--s2) var(--s3); border-radius:var(--r-pill); color:var(--text-muted); font-size:12.5px; }
+.step .num{ width:22px; height:22px; border-radius:50%; background:var(--bg-inset); color:var(--text-muted); display:grid; place-items:center; font-size:11px; font-weight:600; }
+.step.done{ color:var(--success); }
+.step.done .num{ background:var(--success-soft); color:var(--success); }
+.step.current{ color:var(--brand); font-weight:500; }
+.step.current .num{ background:var(--brand); color:#fff; }
+.step-line{ flex:0 0 24px; height:1px; background:var(--border-strong); }
+
+/* ==========================================================================
+   Filter bar
+   ========================================================================== */
+.filter-bar{ display:flex; align-items:center; gap:var(--s3); margin-bottom:var(--s4); flex-wrap:wrap; }
+.search{ position:relative; }
+.search .input{ padding-left:32px; }
+.search svg{ position:absolute; left:10px; top:50%; transform:translateY(-50%); width:14px; height:14px; color:var(--text-muted); pointer-events:none; }
+
+/* ==========================================================================
+   Empty state
+   ========================================================================== */
+.empty{ padding:var(--s7); text-align:center; color:var(--text-secondary); }
+.empty svg{ width:48px; height:48px; color:var(--text-muted); opacity:.4; margin-bottom:var(--s3); }
+.empty h3{ margin:0 0 var(--s2); color:var(--text-primary); font-size:15px; }
+.empty p{ margin:0 0 var(--s4); font-size:13px; }
+
+/* ==========================================================================
+   Slide-over
+   ========================================================================== */
+.overlay{ position:fixed; inset:0; background:rgba(15,23,42,.35); z-index:80; opacity:0; pointer-events:none; transition:opacity 220ms; }
+.overlay.on{ opacity:1; pointer-events:auto; }
+.slideover{
+  position:fixed; top:0; right:0; bottom:0; width:560px; max-width:92vw; background:var(--bg-elevated);
+  box-shadow:var(--sh-pop); z-index:90; transform:translateX(100%); transition:transform 220ms cubic-bezier(.4,0,.2,1);
+  display:flex; flex-direction:column;
+}
+.slideover.on{ transform:translateX(0); }
+.so-header{ padding:var(--s4) var(--s5); border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; }
+.so-title{ display:flex; align-items:center; gap:var(--s2); font-size:14px; font-weight:600; }
+.so-close{ width:28px; height:28px; border-radius:var(--r-sm); background:transparent; border:none; cursor:pointer; color:var(--text-muted); display:grid; place-items:center; }
+.so-close:hover{ background:var(--bg-hover); color:var(--text-primary); }
+.so-tabs{ display:flex; padding:0 var(--s5); border-bottom:1px solid var(--border); gap:var(--s5); }
+.so-tab{ padding:var(--s3) 0; font-size:12.5px; color:var(--text-secondary); cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; }
+.so-tab.on{ color:var(--brand); border-bottom-color:var(--brand); font-weight:500; }
+.so-body{ flex:1; overflow-y:auto; padding:var(--s5); }
+.so-footer{ padding:var(--s4) var(--s5); border-top:1px solid var(--border); display:flex; justify-content:flex-end; gap:var(--s2); }
+
+/* ==========================================================================
+   Modal
+   ========================================================================== */
+.modal{ position:fixed; top:50%; left:50%; transform:translate(-50%,-50%) scale(.96); background:var(--bg-elevated); border-radius:var(--r-lg); box-shadow:var(--sh-pop); z-index:100; max-width:640px; width:92vw; max-height:85vh; display:flex; flex-direction:column; opacity:0; pointer-events:none; transition:all 180ms; }
+.modal.on{ opacity:1; pointer-events:auto; transform:translate(-50%,-50%) scale(1); }
+.modal-header{ padding:var(--s4) var(--s5); border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; }
+.modal-body{ padding:var(--s5); overflow-y:auto; flex:1; }
+.modal-footer{ padding:var(--s4) var(--s5); border-top:1px solid var(--border); display:flex; justify-content:flex-end; gap:var(--s2); }
+.modal.danger .modal-header h3{ color:var(--danger); }
+
+/* ==========================================================================
+   Command palette
+   ========================================================================== */
+.cmd{
+  position:fixed; top:15vh; left:50%; transform:translateX(-50%); width:640px; max-width:92vw;
+  background:var(--bg-elevated); border:1px solid var(--border); border-radius:var(--r-lg); box-shadow:var(--sh-pop);
+  z-index:110; display:none; flex-direction:column; overflow:hidden;
+}
+.cmd.on{ display:flex; }
+.cmd input{ height:44px; border:none; border-bottom:1px solid var(--border); padding:0 var(--s5); font-size:14px; outline:none; background:transparent; color:var(--text-primary); }
+.cmd .results{ max-height:60vh; overflow-y:auto; padding:var(--s2); }
+.cmd .group-label{ padding:var(--s2) var(--s3); font-size:10.5px; color:var(--text-muted); text-transform:uppercase; letter-spacing:.5px; font-weight:600; }
+.cmd .item{ display:flex; align-items:center; gap:var(--s3); padding:var(--s2) var(--s3); border-radius:var(--r-sm); cursor:pointer; font-size:13px; color:var(--text-primary); }
+.cmd .item.on{ background:var(--brand-soft); color:var(--brand); }
+html[data-theme="dark"] .cmd .item.on{ background:rgba(59,130,246,.18); color:var(--brand); }
+.cmd .item svg{ width:14px; height:14px; color:var(--text-secondary); }
+.cmd .item .shortcut{ margin-left:auto; color:var(--text-muted); font-family:var(--font-mono); font-size:10.5px; }
+.cmd .hint-bar{ padding:var(--s2) var(--s5); border-top:1px solid var(--border); color:var(--text-muted); font-size:11px; display:flex; gap:var(--s4); }
+.cmd .hint-bar kbd{ font-family:var(--font-mono); padding:1px 4px; background:var(--bg-inset); border-radius:3px; }
+
+/* ==========================================================================
+   Toast
+   ========================================================================== */
+.toasts{ position:fixed; top:16px; right:16px; z-index:200; display:flex; flex-direction:column; gap:8px; max-width:360px; }
+.toast{ background:var(--bg-elevated); color:var(--text-primary); border:1px solid var(--border); border-left:3px solid var(--success); padding:10px 14px; border-radius:var(--r-sm); box-shadow:var(--sh-pop); font-size:12.5px; animation:slide-in .2s; display:flex; align-items:center; gap:8px; }
+.toast.err{ border-left-color:var(--danger); }
+.toast.warn{ border-left-color:var(--warning); }
+.toast.info{ border-left-color:var(--info); }
+@keyframes slide-in{ from{ opacity:0; transform:translateX(12px); } to{ opacity:1; transform:translateX(0); } }
+
+/* ==========================================================================
+   Adapters picker
+   ========================================================================== */
+.db-picker{ display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:var(--s4); }
+.db-pick{
+  position:relative; padding:var(--s5); border:2px solid var(--border); border-radius:var(--r-md);
+  background:var(--bg-elevated); cursor:pointer; transition:all 150ms;
+}
+.db-pick:hover{ border-color:var(--border-strong); }
+.db-pick.on{ border-color:var(--brand); background:var(--brand-soft); }
+html[data-theme="dark"] .db-pick.on{ background:rgba(59,130,246,.1); }
+.db-pick .head{ display:flex; align-items:center; gap:var(--s3); margin-bottom:var(--s2); }
+.db-pick .name{ font-weight:600; font-size:15px; }
+.db-pick .meta{ color:var(--text-secondary); font-size:12px; font-family:var(--font-mono); }
+.db-pick .tools{ color:var(--text-muted); font-size:11.5px; margin-top:var(--s2); }
+
+/* ==========================================================================
+   Tool checklist
+   ========================================================================== */
+.tools-group{ margin-bottom:var(--s3); }
+.tools-group h4{ margin:0 0 var(--s2); font-size:11.5px; color:var(--text-muted); text-transform:uppercase; letter-spacing:.5px; }
+.tool{ display:flex; align-items:center; gap:var(--s2); padding:8px var(--s3); border:1px solid var(--border); border-radius:var(--r-sm); margin-bottom:6px; cursor:pointer; font-size:12.5px; }
+.tool:hover{ background:var(--bg-hover); }
+.tool input{ margin:0; }
+.tool.locked{ background:var(--bg-inset); cursor:not-allowed; opacity:.7; }
+.tool .tag{ margin-left:auto; font-size:10.5px; padding:1px 6px; border-radius:3px; }
+.tool .tag.req{ background:var(--info-soft); color:var(--info); }
+.tool .tag.danger{ background:var(--warning-soft); color:var(--warning); }
+
+/* ==========================================================================
+   KV list
+   ========================================================================== */
+.kv{ display:grid; grid-template-columns:120px 1fr auto; gap:8px var(--s3); font-size:12.5px; align-items:center; }
+.kv dt{ color:var(--text-secondary); font-weight:500; }
+.kv dd{ margin:0; font-family:var(--font-mono); font-size:12px; color:var(--text-primary); word-break:break-all; }
+.kv .copy-btn{ opacity:0; transition:opacity 120ms; }
+.kv:hover .copy-btn{ opacity:1; }
+
+/* ==========================================================================
+   Setup banner (post-onboarding)
+   ========================================================================== */
+.banner{ display:flex; align-items:center; gap:var(--s3); padding:var(--s3) var(--s5); background:linear-gradient(90deg,var(--brand-soft),transparent); border-left:3px solid var(--brand); border-radius:var(--r-sm); margin-bottom:var(--s5); font-size:13px; }
+.banner .dismiss{ margin-left:auto; color:var(--text-muted); cursor:pointer; font-size:11px; }
+.banner .dismiss:hover{ color:var(--text-primary); }
+
+/* ==========================================================================
+   Utility
+   ========================================================================== */
+.mono{ font-family:var(--font-mono); }
+.text-sec{ color:var(--text-secondary); }
+.text-mut{ color:var(--text-muted); }
+.fw-600{ font-weight:600; }
+.mt-4{ margin-top:16px; }
+.mt-6{ margin-top:24px; }
+.hidden{ display:none !important; }
+.stack-2 > * + *{ margin-top:8px; }
+.stack-3 > * + *{ margin-top:12px; }
+.stack-4 > * + *{ margin-top:16px; }
+.flex{ display:flex; }
+.flex-col{ flex-direction:column; }
+.items-center{ align-items:center; }
+.justify-between{ justify-content:space-between; }
+.gap-2{ gap:8px; }
+.gap-3{ gap:12px; }
+.gap-4{ gap:16px; }
+
+/* Scrollbars */
+::-webkit-scrollbar{ width:10px; height:10px; }
+::-webkit-scrollbar-track{ background:transparent; }
+::-webkit-scrollbar-thumb{ background:var(--border-strong); border-radius:10px; border:2px solid transparent; background-clip:padding-box; }
+::-webkit-scrollbar-thumb:hover{ background:var(--text-muted); background-clip:padding-box; border:2px solid transparent; }
+
+/* Preview helper — dev-only, remove when integrated */
+.env-pill{ position:fixed; bottom:12px; right:12px; z-index:1000; font-family:var(--font-mono); font-size:10.5px; color:var(--text-muted); background:var(--bg-elevated); border:1px solid var(--border); padding:2px 8px; border-radius:var(--r-pill); }
+
+/* Setup wizard two-col layout */
+.wizard-split{ display:grid; grid-template-columns:1fr 320px; gap:var(--s5); align-items:start; }
+@media (max-width: 1200px){ .wizard-split{ grid-template-columns:1fr; } }
+.wizard-side{ background:var(--bg-inset); border-radius:var(--r-md); padding:var(--s4); font-size:12px; color:var(--text-secondary); }
+.wizard-side h4{ margin:0 0 var(--s2); font-size:12px; color:var(--text-primary); }
+.wizard-side ul{ margin:0; padding-left:var(--s4); line-height:1.8; }
+
+/* Skill target list */
+.tgt-list{ display:flex; flex-direction:column; gap:6px; margin-bottom:var(--s3); }
+.tgt{ display:flex; align-items:center; gap:var(--s3); padding:10px var(--s3); background:var(--bg-inset); border-radius:var(--r-sm); font-size:12.5px; }
+.tgt .path{ flex:1; font-family:var(--font-mono); color:var(--text-secondary); word-break:break-all; }
+
+/* Log entry */
+.log-row{ display:grid; grid-template-columns:130px 100px 60px 60px 1fr; gap:var(--s3); padding:6px var(--s3); font-family:var(--font-mono); font-size:11.5px; border-bottom:1px solid var(--border); align-items:center; }
+.log-row:hover{ background:var(--bg-hover); }
+.log-row .st-ok{ color:var(--success); }
+.log-row .st-err{ color:var(--danger); }
+.log-row .dur{ text-align:right; }
+/* SVG sizing safety net: any inline SVG without width attribute defaults to 16px */
+.icon-btn svg, .cmd-btn svg, .brand-mark svg, .side-item svg, .btn svg, .chip svg, .badge svg, .title-crumb svg { width:16px; height:16px; flex-shrink:0; }
+.brand-mark svg { width:20px; height:20px; }
+.empty svg { width:48px; height:48px; stroke-width:1.5; }
+.banner svg { width:16px; height:16px; flex-shrink:0; }
+.card-header svg, .kvv svg, .kvv-row svg { width:14px; height:14px; flex-shrink:0; }
+.toast svg { width:16px; height:16px; flex-shrink:0; }
+</style>
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ==================== Topbar ==================== -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 7c0-1.66 3.58-3 8-3s8 1.34 8 3-3.58 3-8 3-8-1.34-8-3z"/><path d="M4 7v10c0 1.66 3.58 3 8 3s8-1.34 8-3V7"/><path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"/></svg></span>
+      <span>DB MCP Helper</span>
+    </div>
+    <div class="title-crumb" id="crumb">总览</div>
+    <div class="spacer"></div>
+    <button class="cmd-btn" id="cmd-open">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;vertical-align:-2px"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <span>搜索或跳转…</span>
+      <kbd>⌘K</kbd>
+    </button>
+    <button class="icon-btn" id="theme-toggle" title="切换主题">
+      <svg id="theme-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+    </button>
+    <button class="icon-btn" title="帮助"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;vertical-align:-2px"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg></button>
+  </header>
+
+  <div class="layout">
+
+    <!-- ==================== Sidebar ==================== -->
+    <aside class="sidebar" id="sidebar">
+      <div class="side-group">
+        <div class="side-label">主导航</div>
+        <div class="side-item" data-route="overview"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;vertical-align:-2px"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></svg><span class="side-text">总览</span></div>
+        <div class="side-item" data-route="instances"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;vertical-align:-2px"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg><span class="side-text">实例</span><span class="badge neutral" style="margin-left:auto;font-size:10px" id="nav-inst-count">4</span></div>
+        <div class="side-item" data-route="runtime"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;vertical-align:-2px"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span class="side-text">Skill 与运行时</span></div>
+        <div class="side-item" data-route="diagnostics"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;vertical-align:-2px"><path d="M4.8 2.3A.3.3 0 1 0 5 2H4a2 2 0 0 0-2 2v5a6 6 0 0 0 6 6a6 6 0 0 0 6-6V4a2 2 0 0 0-2-2h-1a.2.2 0 1 0 .3.3"/><path d="M8 15v1a6 6 0 0 0 6 6a6 6 0 0 0 6-6v-4"/><circle cx="20" cy="10" r="2"/></svg><span class="side-text">排障</span></div>
+        <div class="side-item" data-route="system"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;vertical-align:-2px"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span class="side-text">系统</span></div>
+      </div>
+      <div class="side-group side-bottom">
+        <div class="side-item" id="collapse-btn"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;vertical-align:-2px"><path d="m11 17-5-5 5-5"/><path d="m18 17-5-5 5-5"/></svg><span class="side-text">收起侧栏</span></div>
+      </div>
+    </aside>
+
+    <!-- ==================== Main ==================== -->
+    <main class="main" id="main"></main>
+
+  </div>
+</div>
+
+<!-- Overlays -->
+<div class="overlay" id="overlay"></div>
+<div class="slideover" id="slideover"></div>
+<div class="modal" id="modal"></div>
+<div class="cmd" id="cmd">
+  <input type="text" id="cmd-input" placeholder="搜索实例、跳转、动作…" autocomplete="off">
+  <div class="results" id="cmd-results"></div>
+  <div class="hint-bar"><span><kbd>↑↓</kbd> 移动</span><span><kbd>↵</kbd> 选择</span><span><kbd>esc</kbd> 关闭</span></div>
+</div>
+<div class="toasts" id="toasts"></div>
+<div class="env-pill">prototype · mock data</div>
+
+<script>
+"use strict";
+/* ==========================================================================
+   Icons (inline SVG helpers)
+   ========================================================================== */
+const IC = {
+  plus: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;vertical-align:-2px"><path d="M12 5v14M5 12h14"/></svg>',
+  check: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;vertical-align:-2px"><path d="M20 6 9 17l-5-5"/></svg>',
+  play: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;vertical-align:-2px"><polygon points="5 3 19 12 5 21 5 3"/></svg>',
+  refresh: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;vertical-align:-2px"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>',
+  x: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;vertical-align:-2px"><path d="M18 6 6 18M6 6l12 12"/></svg>',
+  copy: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;vertical-align:-2px"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;vertical-align:-2px"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>',
+  kebab: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;vertical-align:-2px"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>',
+  edit: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;vertical-align:-2px"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/></svg>',
+  db: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;vertical-align:-2px"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg>',
+  right: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;vertical-align:-2px"><path d="m9 18 6-6-6-6"/></svg>',
+  search: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;vertical-align:-2px"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>',
+  alert: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;vertical-align:-2px"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg>',
+  info: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;vertical-align:-2px"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>',
+  rocket: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;vertical-align:-2px"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg>',
+  puzzle: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;vertical-align:-2px"><path d="M19.439 7.85c-.049.322.059.747.213 1.048.278.543.166 1.098-.025 1.445l-.025.045a3.3 3.3 0 0 1-3.426 1.68l-.05-.01c-.3-.048-.747.047-1.048.213-.543.278-.784.723-.92 1.111l-.014.05a3.36 3.36 0 0 1-6.538.835l-.011-.05c-.049-.322.047-.747.213-1.048.278-.543.166-1.098-.025-1.445l-.025-.045a3.3 3.3 0 0 1-1.68-3.426l.01-.05c.048-.3.047-.747.213-1.048.278-.543.723-.784 1.111-.92l.05-.014a3.36 3.36 0 0 1 .835-6.538l.05.011c.322.049.747-.047 1.048-.213.543-.278 1.098-.166 1.445.025l.045.025a3.3 3.3 0 0 1 1.68 3.426l-.01.05c-.048.3.047.747.213 1.048.278.543.723.784 1.111.92l.05.014a3.36 3.36 0 0 1 6.538-.835l.011.05c.049.322-.047.747-.213 1.048-.278.543-.166 1.098.025 1.445l.025.045a3.3 3.3 0 0 1 3.426 1.68l.01.05"/></svg>'
+};
+
+/* ==========================================================================
+   Mock state (mimics /api/detect + /api/adapters responses)
+   ========================================================================== */
+const STATE = {
+  booted: false,
+  setupCompleted: true, // toggle to false to see welcome flow
+  detect: {
+    home: "C:/Users/chuzh",
+    root: "D:/Other Program Files/MCP Server/DB MCP Helper",
+    tapDeployed: true,
+    javaCmd: "C:/Develop Program Files/java/jdk-17/bin/java.exe",
+    mcpJsonPath: "C:/Users/chuzh/.qoderwork/mcp.json",
+    qoderPluginMcpJsonPath: "C:/Users/chuzh/.qoder/shared_client/mcp.json",
+    registeredServers: ["oracle-uat","mysql-dev","oracle-prod"],
+    qoderPluginRegisteredServers: [],
+    state: {
+      skillTargets: [
+        "C:/Users/chuzh/.qoderwork/skills",
+        "C:/Users/chuzh/.agents/skills"
+      ],
+      envs: {
+        "uat": { dbType:"oracle", aliases:["UAT","验收"], tools:["read-query","db-ping"], host:"10.20.1.55", port:1521, database:"SALESPORTALUAT", user:"app_reader", registered:true, lastTest:{ok:true, ts:"2h前", detail:"OK 12.2.0.1"} },
+        "prod": { dbType:"oracle", aliases:["生产","线上"], tools:["read-query","db-ping","table"], host:"10.20.1.10", port:1521, database:"SALESPORTAL", user:"app_reader", registered:true, lastTest:{ok:true, ts:"5h前", detail:"OK 19.3.0.0"} },
+        "dev": { dbType:"mysql", aliases:["开发","development"], tools:["query","insert","update"], host:"localhost", port:3306, database:"sales_dev", user:"root", registered:true, lastTest:{ok:false, ts:"昨天", detail:"ER_ACCESS_DENIED_ERROR"} },
+        "test": { dbType:"mysql", aliases:["测试","SIT"], tools:["query"], host:"10.20.1.80", port:3306, database:"sales_test", user:"ci_user", registered:false, lastTest:{ok:true, ts:"3d前", detail:"OK 8.0.32"} }
+      }
+    }
+  },
+  adapters: [
+    { id:"oracle", displayName:"Oracle", defaultPort:1521, serverPrefix:"oracle-", skillDir:"oracle-db-ops", runtimeKind:"JAVA_JAR", allTools:["read-query","db-ping","table","explain-plan","write-query"], requiredTools:["read-query","db-ping"] },
+    { id:"mysql", displayName:"MySQL", defaultPort:3306, serverPrefix:"mysql-", skillDir:"mysql-db-ops", runtimeKind:"NODE", allTools:["query","insert","update","delete"], requiredTools:["query"] }
+  ],
+  mockLogs: [
+    { ts:"2026-08-29 15:22:11", tool:"read-query", dur:34, ok:true, sql:"SELECT COUNT(*) FROM ec_process_order WHERE status = 'OPEN'" },
+    { ts:"2026-08-29 15:21:02", tool:"table",       dur:12, ok:true, sql:"SALES_PORTAL_REBATE.EC_REBATE_RULE" },
+    { ts:"2026-08-29 14:58:37", tool:"read-query", dur:1204, ok:true, sql:"SELECT * FROM dual" },
+    { ts:"2026-08-29 14:12:09", tool:"write-query", dur:88, ok:false, sql:"UPDATE ec_process_order SET status = 'CLOSED'" },
+    { ts:"2026-08-28 18:03:22", tool:"explain-plan", dur:45, ok:true, sql:"SELECT r.id FROM ec_rebate_rule r JOIN ec_rule_header h ON r.h_id = h.id" }
+  ],
+  ui: {
+    filter: { dbType:"all", perm:"all", status:"all", q:"" },
+    slideOver: null,
+    theme: "light",
+    sidebarCollapsed: false
+  }
+};
+
+/* ==========================================================================
+   Utilities
+   ========================================================================== */
+const $ = s => document.querySelector(s);
+const $$ = s => document.querySelectorAll(s);
+function esc(s){ return String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
+function toast(msg, type="ok"){
+  const el = document.createElement("div");
+  el.className = "toast " + type;
+  el.textContent = msg;
+  $("#toasts").appendChild(el);
+  setTimeout(() => el.remove(), 3200);
+}
+function getAdapter(id){ return STATE.adapters.find(a=>a.id===id); }
+function allInstances(){
+  const out = [];
+  for (const [code, info] of Object.entries(STATE.detect.state.envs)) out.push({ code, ...info });
+  return out;
+}
+function filteredInstances(){
+  const f = STATE.ui.filter;
+  return allInstances().filter(i => {
+    if (f.dbType !== "all" && i.dbType !== f.dbType) return false;
+    const isWrite = i.tools.some(t => /(write|insert|update|delete)/i.test(t));
+    if (f.perm === "ro" && isWrite) return false;
+    if (f.perm === "rw" && !isWrite) return false;
+    const isReg = STATE.detect.registeredServers.includes(getAdapter(i.dbType).serverPrefix + i.code);
+    if (f.status === "reg" && !isReg) return false;
+    if (f.status === "unreg" && isReg) return false;
+    if (f.status === "err" && !(i.lastTest && !i.lastTest.ok)) return false;
+    if (f.q){
+      const hay = [i.code, ...(i.aliases||[]), i.host, i.user, i.database].join(" ").toLowerCase();
+      if (!hay.includes(f.q.toLowerCase())) return false;
+    }
+    return true;
+  });
+}
+function isReg(i){ return STATE.detect.registeredServers.includes(getAdapter(i.dbType).serverPrefix + i.code); }
+function hasWrite(i){ return i.tools.some(t => /(write|insert|update|delete)/i.test(t)); }
+
+/* ==========================================================================
+   Router
+   ========================================================================== */
+const routes = {};
+function navigate(hash){
+  if (location.hash === hash) render();
+  else location.hash = hash;
+}
+window.addEventListener("hashchange", render);
+function render(){
+  const hash = location.hash.replace(/^#\//, "") || (STATE.setupCompleted ? "instances" : "welcome");
+  const [route, ...rest] = hash.split("/");
+  const handler = routes[route] || routes._default;
+  const crumbMap = { welcome:"欢迎", setup:"首次接入", overview:"总览", instances:"实例", runtime:"Skill 与运行时", diagnostics:"排障", system:"系统" };
+  $("#crumb").textContent = crumbMap[route] || "—";
+  $$(".side-item").forEach(el => el.classList.toggle("active", el.dataset.route === route));
+  $("#sidebar").style.display = (route === "welcome" || route === "setup") ? "none" : "flex";
+  handler(rest);
+  $("#main").scrollTop = 0;
+}
+
+/* ==========================================================================
+   Page: welcome (empty state onboarding)
+   ========================================================================== */
+routes.welcome = () => {
+  $("#main").innerHTML = `
+    <div class="page" style="max-width:960px">
+      <div style="text-align:center; padding:60px 0 40px">
+        <div style="display:inline-grid; place-items:center; width:64px; height:64px; border-radius:16px; background:linear-gradient(135deg,var(--brand),#7c3aed); color:#fff; margin-bottom:20px">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:32px;height:32px"><path d="M4 7c0-1.66 3.58-3 8-3s8 1.34 8 3-3.58 3-8 3-8-1.34-8-3z"/><path d="M4 7v10c0 1.66 3.58 3 8 3s8-1.34 8-3V7"/><path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"/></svg>
+        </div>
+        <h1 style="font-size:26px; margin:0 0 8px; letter-spacing:-.02em">把数据库接入 AI 客户端，只需 3 步</h1>
+        <p class="text-sec" style="font-size:14px; max-width:520px; margin:0 auto">DB MCP Helper 帮你完成 Oracle / MySQL 的 MCP 服务器安装、注册、连接自检与 Skill 部署。<br>所有配置只留在本机，可随时一键清空。</p>
+      </div>
+
+      <div class="card" style="margin-bottom:20px">
+        <div class="card-header"><h3>${IC.check} 环境检测</h3><button class="btn ghost sm" onclick="toast('重新检测…','info')">${IC.refresh} 重新检测</button></div>
+        <div class="stack-2">
+          <div class="flex items-center gap-3"><span class="badge ok"><span class="dot"></span>通过</span><span>Java 17.0.7 · <span class="mono text-mut">${esc(STATE.detect.javaCmd)}</span></span></div>
+          <div class="flex items-center gap-3"><span class="badge ok"><span class="dot"></span>通过</span><span>磁盘剩余 240 GB</span></div>
+          <div class="flex items-center gap-3"><span class="badge ok"><span class="dot"></span>通过</span><span>QoderWork mcp.json 已找到 · <span class="mono text-mut">${esc(STATE.detect.mcpJsonPath)}</span></span></div>
+          <div class="flex items-center gap-3"><span class="badge warn"><span class="dot"></span>提示</span><span>IDEA Qoder 插件未安装，可忽略</span></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:20px">
+        <div class="card-header"><h3>${IC.db} 支持的数据源</h3><span class="text-mut" style="font-size:12px">${STATE.adapters.length} 种</span></div>
+        <div class="db-picker">
+          ${STATE.adapters.map(a => `
+            <div>
+              <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px">
+                <div class="db-icon ${a.id}" style="width:28px; height:28px; font-size:12px">${a.id[0].toUpperCase()}</div>
+                <div>
+                  <div style="font-weight:600">${a.displayName}</div>
+                  <div class="text-mut" style="font-size:11.5px">端口 ${a.defaultPort} · ${a.allTools.length} 工具 · ${a.runtimeKind}</div>
+                </div>
+              </div>
+              <div class="text-mut" style="font-size:11.5px; line-height:1.6">${a.allTools.join(" · ")}</div>
+            </div>
+          `).join("")}
+        </div>
+      </div>
+
+      <div style="display:flex; justify-content:center; gap:12px; padding-top:20px">
+        <button class="btn md primary" onclick="location.hash='#/setup/1'">${IC.rocket} 快速接入向导</button>
+        <button class="btn md secondary" onclick="STATE.setupCompleted=true; location.hash='#/instances'">先看看管理台</button>
+      </div>
+    </div>
+  `;
+};
+
+/* ==========================================================================
+   Page: setup (3-step wizard)
+   ========================================================================== */
+routes.setup = (rest) => {
+  const step = parseInt(rest[0] || "1", 10);
+  const setupData = window.__setupDraft = window.__setupDraft || { dbId:"oracle", env:"uat", aliases:[], tools:null, registered:false, skillDeployed:false };
+  if (!setupData.tools) setupData.tools = getAdapter(setupData.dbId).requiredTools.slice();
+
+  const stepper = `<div class="stepper">
+    <div class="step ${step>1?'done':step===1?'current':''}"><span class="num">${step>1?'✓':'1'}</span> 选择数据源 & 部署运行时</div>
+    <span class="step-line"></span>
+    <div class="step ${step>2?'done':step===2?'current':''}"><span class="num">${step>2?'✓':'2'}</span> 创建第一个实例</div>
+    <span class="step-line"></span>
+    <div class="step ${step===3?'current':''}"><span class="num">3</span> 注册连接器 & 部署 Skill</div>
+  </div>`;
+
+  let body = "";
+  if (step === 1) body = setupStep1(setupData);
+  else if (step === 2) body = setupStep2(setupData);
+  else if (step === 3) body = setupStep3(setupData);
+
+  $("#main").innerHTML = `
+    <div class="page" style="max-width:1100px">
+      <div class="page-title-row">
+        <div>
+          <div class="page-title">快速接入</div>
+          <div class="page-sub">3 步完成从下载运行时到 QoderWork 可用的全过程</div>
+        </div>
+        <button class="btn ghost sm" onclick="location.hash='#/instances'">跳过向导</button>
+      </div>
+      ${stepper}
+      ${body}
+    </div>
+  `;
+  bindSetup(step, setupData);
+};
+
+function setupStep1(d){
+  return `<div class="wizard-split">
+    <div>
+      <div class="card">
+        <div class="card-header"><h3>选择数据源类型</h3></div>
+        <div class="db-picker">
+          ${STATE.adapters.map(a => `
+            <div class="db-pick ${d.dbId===a.id?'on':''}" data-db="${a.id}">
+              <div class="head">
+                <div class="db-icon ${a.id}">${a.id[0].toUpperCase()}</div>
+                <div>
+                  <div class="name">${a.displayName}</div>
+                  <div class="meta">${a.serverPrefix}code · 端口 ${a.defaultPort}</div>
+                </div>
+              </div>
+              <div class="tools">${a.allTools.length} 个工具 · ${a.runtimeKind === 'JAVA_JAR' ? 'JLink JRE' : 'Node runtime'}</div>
+            </div>
+          `).join("")}
+        </div>
+        <div class="mt-6">
+          <div class="field-label">运行时释放目录</div>
+          <div class="mono" style="padding:10px var(--s3); background:var(--bg-inset); border-radius:var(--r-sm); font-size:12px">${esc(STATE.detect.root)}</div>
+          <div class="field-hint">运行时与所有实例配置都放在这个目录，卸载时一并清理。</div>
+        </div>
+        <div class="mt-6" style="display:flex; justify-content:flex-end">
+          <button class="btn md primary" id="s1-next">部署运行时并继续 ${IC.right}</button>
+        </div>
+      </div>
+    </div>
+    <aside class="wizard-side">
+      <h4>这一步会做什么？</h4>
+      <ul>
+        <li>下载/释放 <span class="mono">${getAdapter(d.dbId).id}</span> toolkit 到本地</li>
+        <li>安装 tap 监听代理（记录后续所有 MCP 调用）</li>
+        <li>配置 JRE 或 Node 运行时</li>
+      </ul>
+      <div style="margin-top:16px; padding-top:16px; border-top:1px solid var(--border); color:var(--text-muted); font-size:11.5px">
+        磁盘占用约 240 MB。所有动作都在本机进行，不上传任何配置。
+      </div>
+    </aside>
+  </div>`;
+}
+
+function setupStep2(d){
+  const a = getAdapter(d.dbId);
+  const isWrite = t => /(write|insert|update|delete)/i.test(t);
+  const idKey = a.id === "oracle" ? "service" : "database";
+  const idLabel = a.id === "oracle" ? "服务名 (service)" : "数据库名 (database)";
+  return `<div class="wizard-split">
+    <div>
+      <div class="card">
+        <div class="card-header"><h3>创建实例 · ${a.displayName}</h3></div>
+        <div class="row">
+          <div class="field">
+            <div class="field-label">实例标识<span class="req">*</span></div>
+            <input class="input" value="${esc(d.env)}" id="s2-env" placeholder="如 uat / prod">
+            <div class="field-hint">用于生成连接器名 <span class="mono">${a.serverPrefix}${esc(d.env)}</span>。小写字母/数字/连字符。</div>
+          </div>
+          <div class="field">
+            <div class="field-label">口语别名</div>
+            <div class="flex gap-2" style="flex-wrap:wrap; padding:6px 8px; border:1px solid var(--border-strong); border-radius:var(--r-sm); min-height:32px">
+              ${d.aliases.map(x => `<span class="chip">${esc(x)}<span class="x">×</span></span>`).join("")}
+              <input style="flex:1; min-width:100px; border:none; outline:none; background:transparent; font-size:12.5px" placeholder="回车添加，如「生产」" id="s2-alias">
+            </div>
+            <div class="field-hint">供 AI 识别用户口语叫法。</div>
+          </div>
+        </div>
+        <div class="row-3">
+          <div class="field"><div class="field-label">主机 host<span class="req">*</span></div><input class="input" placeholder="db.example.com"></div>
+          <div class="field"><div class="field-label">端口</div><input class="input" value="${a.defaultPort}"></div>
+          <div class="field"><div class="field-label">${idLabel}<span class="req">*</span></div><input class="input" placeholder="${a.id === 'oracle' ? 'SALESPORTALUAT' : 'sales_portal'}"></div>
+        </div>
+        <div class="row">
+          <div class="field"><div class="field-label">用户名<span class="req">*</span></div><input class="input"></div>
+          <div class="field"><div class="field-label">密码<span class="req">*</span></div><input class="input" type="password"></div>
+        </div>
+        <details class="mt-4"><summary class="text-sec" style="cursor:pointer; font-size:12px; padding:8px 0">高级：粘贴 Spring YAML / properties 片段自动回填</summary>
+          <textarea class="textarea" style="margin-top:8px" placeholder="url: jdbc:oracle:thin:@10.20.1.55:1521/SALESPORTALUAT&#10;username: app&#10;password: ***"></textarea>
+          <button class="btn ghost sm mt-4">解析并回填</button>
+        </details>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><h3>权限</h3>
+          <div class="seg">
+            <button class="${!d.tools.some(isWrite)?'on':''}" data-preset="ro">只读</button>
+            <button class="${d.tools.some(isWrite)?'on':''}" data-preset="rw">读写</button>
+          </div>
+        </div>
+        <div class="tools-group">
+          <h4>查询</h4>
+          ${a.allTools.filter(t=>!isWrite(t)).map(t => `
+            <label class="tool ${a.requiredTools.includes(t)?'locked':''}">
+              <input type="checkbox" ${d.tools.includes(t)?'checked':''} ${a.requiredTools.includes(t)?'disabled':''} data-tool="${t}">
+              <span class="mono">${t}</span>
+              ${a.requiredTools.includes(t)?'<span class="tag req">必选</span>':''}
+            </label>
+          `).join("")}
+        </div>
+        <div class="tools-group">
+          <h4>写操作 · 高危</h4>
+          ${a.allTools.filter(isWrite).map(t => `
+            <label class="tool">
+              <input type="checkbox" ${d.tools.includes(t)?'checked':''} data-tool="${t}">
+              <span class="mono">${t}</span>
+              <span class="tag danger">写</span>
+            </label>
+          `).join("")}
+        </div>
+      </div>
+
+      <div class="mt-6" style="display:flex; justify-content:space-between">
+        <button class="btn secondary" onclick="location.hash='#/setup/1'">${IC.right} 上一步</button>
+        <button class="btn md primary" id="s2-next">保存并自检 ${IC.right}</button>
+      </div>
+    </div>
+
+    <aside class="wizard-side">
+      <h4>实例是什么？</h4>
+      <div style="line-height:1.8">一个实例 = 一个数据库连接配置 = 一个 MCP 连接器。<br><br>多环境（dev/test/uat/prod）就是多实例。<br><br>每个实例独立权限：UAT 只读、DEV 读写。</div>
+      <h4 style="margin-top:16px">推荐策略</h4>
+      <div style="line-height:1.8">生产实例：仅勾选 <span class="mono">read-query</span> 与 <span class="mono">db-ping</span>。<br>开发实例：可开写工具。</div>
+    </aside>
+  </div>`;
+}
+
+function setupStep3(d){
+  const a = getAdapter(d.dbId);
+  const serverName = a.serverPrefix + d.env;
+  const skillTargets = STATE.detect.state.skillTargets;
+  return `<div class="card" style="padding:0; overflow:hidden">
+    <div style="padding:32px var(--s6); background:linear-gradient(135deg, var(--brand-soft), transparent); border-bottom:1px solid var(--border)">
+      <div style="display:flex; align-items:center; gap:12px; margin-bottom:8px">
+        <div style="width:36px; height:36px; border-radius:50%; background:var(--success); color:#fff; display:grid; place-items:center">${IC.check}</div>
+        <div>
+          <h3 style="margin:0; font-size:18px">最后一步：注册 & 部署</h3>
+          <div class="text-sec">运行时与实例配置已就绪，一键写入 mcp.json 并部署 Skill</div>
+        </div>
+      </div>
+    </div>
+    <div style="padding:var(--s6)">
+      <div class="stack-4">
+        <label class="tool" style="border:none; padding:0; margin:0; cursor:default">
+          <input type="checkbox" checked id="s3-reg">
+          <div>
+            <div class="fw-600">注册连接器 <span class="mono">${serverName}</span></div>
+            <div class="text-mut" style="font-size:12px">写入 <span class="mono">${esc(STATE.detect.mcpJsonPath)}</span>（自动备份）</div>
+          </div>
+        </label>
+        <label class="tool" style="border:none; padding:0; margin:0; cursor:default">
+          <input type="checkbox" checked id="s3-skill">
+          <div>
+            <div class="fw-600">部署 Skill 到 <span class="mono">${a.skillDir}</span></div>
+            <div class="text-mut" style="font-size:12px">已选 ${skillTargets.length} 个目录：<span class="mono">${skillTargets.map(t => t.split('/').slice(-2, -1)[0]).join(' · ')}</span></div>
+          </div>
+        </label>
+      </div>
+
+      <details class="mt-6"><summary class="text-sec" style="cursor:pointer; font-size:12px; padding:8px 0">预览 mcp.json 条目</summary>
+        <pre class="mono" style="background:var(--bg-inset); padding:var(--s4); border-radius:var(--r-sm); font-size:11.5px; overflow-x:auto; line-height:1.6; margin-top:8px">${JSON.stringify({ [serverName]: { command:"java", args:["-jar","tap.jar","--","java","-DconfigFile=...","-jar","toolkit.jar"], enabled:true, _meta:{ dbType:a.id, env:d.env, tools:d.tools } } }, null, 2)}</pre>
+      </details>
+
+      <div style="margin-top:var(--s6); display:flex; justify-content:space-between">
+        <button class="btn secondary" onclick="location.hash='#/setup/2'">上一步</button>
+        <button class="btn md primary" id="s3-done">${IC.rocket} 完成所有配置</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function bindSetup(step, d){
+  if (step === 1){
+    $$(".db-pick").forEach(el => el.onclick = () => {
+      d.dbId = el.dataset.db;
+      d.tools = getAdapter(d.dbId).requiredTools.slice();
+      routes.setup(["1"]);
+    });
+    const n = $("#s1-next"); if (n) n.onclick = () => { toast("运行时部署完成", "ok"); location.hash = "#/setup/2"; };
+  } else if (step === 2){
+    const env = $("#s2-env"); if (env) env.oninput = e => { d.env = e.target.value; $("#s2-env").nextElementSibling; };
+    const al = $("#s2-alias"); if (al) al.onkeydown = e => { if (e.key === "Enter"){ e.preventDefault(); const v = e.target.value.trim(); if (v && !d.aliases.includes(v)) d.aliases.push(v); e.target.value=""; routes.setup(["2"]); } };
+    $$("[data-preset]").forEach(el => el.onclick = () => {
+      const a = getAdapter(d.dbId);
+      const isWrite = t => /(write|insert|update|delete)/i.test(t);
+      d.tools = el.dataset.preset === "ro" ? a.allTools.filter(t=>!isWrite(t)) : a.allTools.slice();
+      routes.setup(["2"]);
+    });
+    $$("[data-tool]").forEach(el => el.onchange = () => {
+      const t = el.dataset.tool;
+      if (el.checked) { if (!d.tools.includes(t)) d.tools.push(t); }
+      else d.tools = d.tools.filter(x => x !== t);
+    });
+    const n = $("#s2-next"); if (n) n.onclick = () => { n.classList.add("loading"); n.textContent="自检中…"; setTimeout(() => { toast("自检通过 · OK 12.2.0.1", "ok"); location.hash = "#/setup/3"; }, 1000); };
+  } else if (step === 3){
+    const done = $("#s3-done"); if (done) done.onclick = () => { STATE.setupCompleted = true; toast("全部完成！重启 QoderWork 让连接器生效", "ok"); location.hash = "#/instances"; };
+  }
+}
+
+/* ==========================================================================
+   Page: overview (dashboard)
+   ========================================================================== */
+routes.overview = () => {
+  const insts = allInstances();
+  const unreg = insts.filter(i => !isReg(i)).length;
+  const failed = insts.filter(i => i.lastTest && !i.lastTest.ok).length;
+  const callsToday = 42;
+
+  $("#main").innerHTML = `
+    <div class="page">
+      <div class="page-title-row">
+        <div>
+          <div class="page-title">总览</div>
+          <div class="page-sub">欢迎回来。当前有 ${insts.length} 个实例，${failed ? failed + ' 个自检异常' : '一切正常'}。</div>
+        </div>
+        <button class="btn primary md" onclick="openInstanceEditor()">${IC.plus} 添加实例</button>
+      </div>
+
+      <div class="metrics">
+        <div class="metric tone-brand"><div class="label">实例总数</div><div class="value">${insts.length}</div></div>
+        <div class="metric tone-warn"><div class="label">未注册</div><div class="value">${unreg}</div></div>
+        <div class="metric tone-danger"><div class="label">自检异常</div><div class="value">${failed}</div></div>
+        <div class="metric tone-success"><div class="label">最近 24h 调用</div><div class="value">${callsToday}</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><h3>需要关注</h3><button class="btn ghost sm">全部忽略</button></div>
+        ${failed === 0 && unreg === 0 ? `<div class="empty"><div style="color:var(--success)">${IC.check}</div><p>所有实例状态良好</p></div>` : `
+        <table class="tbl">
+          <thead><tr><th>状态</th><th>实例</th><th>问题</th><th>建议动作</th></tr></thead>
+          <tbody>
+            ${insts.filter(i => !isReg(i) || (i.lastTest && !i.lastTest.ok)).map(i => {
+              const issues = [];
+              if (!isReg(i)) issues.push("未注册到 mcp.json");
+              if (i.lastTest && !i.lastTest.ok) issues.push("自检失败：" + i.lastTest.detail);
+              return `<tr class="clickable" onclick="openSlideOver('${i.dbType}','${i.code}')">
+                <td><span class="badge ${i.lastTest && !i.lastTest.ok ? 'no' : 'warn'}"><span class="dot"></span>${i.lastTest && !i.lastTest.ok ? '异常' : '待处理'}</span></td>
+                <td><div class="flex items-center gap-2"><div class="db-icon ${i.dbType}">${i.dbType[0].toUpperCase()}</div><span class="fw-600">${i.code}</span></div></td>
+                <td class="text-sec">${issues.join(' · ')}</td>
+                <td class="text-mut">查看详情 →</td>
+              </tr>`;
+            }).join("")}
+          </tbody>
+        </table>`}
+      </div>
+
+      <div class="card">
+        <div class="card-header"><h3>快捷动作</h3></div>
+        <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px">
+          <button class="btn secondary md" style="justify-content:flex-start">${IC.play} 一键自检全部</button>
+          <button class="btn secondary md" style="justify-content:flex-start">${IC.refresh} 同步 Skill 映射</button>
+          <button class="btn secondary md" style="justify-content:flex-start" onclick="location.hash='#/diagnostics'">${IC.info} 环境探测</button>
+          <button class="btn secondary md" style="justify-content:flex-start" onclick="location.hash='#/system'">${IC.trash} 打开系统操作</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><h3>最近活动</h3><span class="text-mut" style="font-size:12px">来自 tap 监听代理</span></div>
+        <div>
+          ${STATE.mockLogs.slice(0,5).map(l => `<div class="log-row"><span class="text-mut">${l.ts}</span><span class="mono">${l.tool}</span><span class="dur num">${l.dur}ms</span><span class="${l.ok?'st-ok':'st-err'}">${l.ok?'✓':'✗'}</span><span class="mono text-sec" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap">${esc(l.sql)}</span></div>`).join("")}
+        </div>
+      </div>
+    </div>
+  `;
+};
+
+/* ==========================================================================
+   Page: instances (main hub)
+   ========================================================================== */
+routes.instances = () => {
+  const insts = filteredInstances();
+  const f = STATE.ui.filter;
+  $("#main").innerHTML = `
+    <div class="page">
+      <div class="page-title-row">
+        <div>
+          <div class="page-title">实例</div>
+          <div class="page-sub">${allInstances().length} 个实例 · 每个实例对应一个独立的 MCP 连接器</div>
+        </div>
+        <button class="btn primary md" onclick="openInstanceEditor()">${IC.plus} 添加实例</button>
+      </div>
+
+      ${!STATE.setupCompleted ? `<div class="banner"><span>${IC.rocket}</span><span>首次接入未完成，<a href="#/setup/1" style="color:var(--brand); font-weight:500">继续向导 →</a></span><span class="dismiss">关闭</span></div>` : ""}
+
+      <div class="filter-bar">
+        <div class="search" style="flex:1; max-width:320px">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;vertical-align:-2px"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input class="input" placeholder="搜索 code / 别名 / host / user…" value="${esc(f.q)}" id="inst-q">
+        </div>
+        <div class="seg" data-filter="dbType">
+          <button class="${f.dbType==='all'?'on':''}" data-v="all">全部</button>
+          ${STATE.adapters.map(a => `<button class="${f.dbType===a.id?'on':''}" data-v="${a.id}">${a.displayName}</button>`).join("")}
+        </div>
+        <div class="seg" data-filter="perm">
+          <button class="${f.perm==='all'?'on':''}" data-v="all">全部权限</button>
+          <button class="${f.perm==='ro'?'on':''}" data-v="ro">只读</button>
+          <button class="${f.perm==='rw'?'on':''}" data-v="rw">读写</button>
+        </div>
+        <div class="seg" data-filter="status">
+          <button class="${f.status==='all'?'on':''}" data-v="all">任意状态</button>
+          <button class="${f.status==='err'?'on':''}" data-v="err">异常</button>
+          <button class="${f.status==='unreg'?'on':''}" data-v="unreg">未注册</button>
+          <button class="${f.status==='reg'?'on':''}" data-v="reg">已注册</button>
+        </div>
+      </div>
+
+      ${insts.length === 0 ? `<div class="card"><div class="empty">
+        <div>${IC.db}</div>
+        <h3>没有匹配的实例</h3>
+        <p>调整筛选条件，或<a href="#" style="color:var(--brand)" onclick="openInstanceEditor();return false">添加新实例</a></p>
+      </div></div>` : `<div class="inst-grid">
+        ${insts.map(i => {
+          const a = getAdapter(i.dbType);
+          const reg = isReg(i);
+          const rw = hasWrite(i);
+          const lt = i.lastTest;
+          return `<div class="inst-card" onclick="openSlideOver('${i.dbType}','${i.code}')">
+            <button class="icon-btn kebab" onclick="event.stopPropagation()">${IC.kebab}</button>
+            <div class="head">
+              <div class="db-icon ${i.dbType}">${i.dbType[0].toUpperCase()}</div>
+              <span class="env">${i.code}</span>
+              <span class="alias">${(i.aliases||[]).slice(0,2).join(' · ')}</span>
+            </div>
+            <div class="meta">${esc(i.host)}:${i.port} · ${esc(i.user)}</div>
+            <div class="badges">
+              <span class="badge ${rw?'warn':'ok'}"><span class="dot"></span>${rw?'读写':'只读'}</span>
+              <span class="badge ${reg?'ok':'neutral'}">${reg?'已注册':'未注册'}</span>
+              ${lt ? `<span class="badge ${lt.ok?'info':'no'}">自检 ${lt.ok?'✓':'✗'} · ${lt.ts}</span>` : ''}
+            </div>
+            <div class="quick">
+              <button class="btn ghost sm" onclick="event.stopPropagation(); toast('${i.code} 自检中…','info')">${IC.play} 自检</button>
+              <button class="btn ghost sm" onclick="event.stopPropagation(); toast('已复制连接器配置','ok')">${IC.copy} 配置</button>
+              ${!reg ? `<button class="btn ghost sm" onclick="event.stopPropagation(); toast('${i.code} 已注册','ok')">${IC.rocket} 注册</button>` : ''}
+            </div>
+          </div>`;
+        }).join("")}
+      </div>`}
+    </div>
+  `;
+  bindFilterBar();
+};
+
+function bindFilterBar(){
+  $$("[data-filter] button").forEach(b => b.onclick = () => {
+    const k = b.parentElement.dataset.filter;
+    STATE.ui.filter[k] = b.dataset.v;
+    render();
+  });
+  const q = $("#inst-q");
+  if (q) q.oninput = e => { STATE.ui.filter.q = e.target.value; /* debounce-free prototype */ };
+}
+
+/* ==========================================================================
+   Slide-over (instance detail)
+   ========================================================================== */
+function openSlideOver(dbType, code){
+  STATE.ui.slideOver = { dbType, code };
+  const i = STATE.detect.state.envs[code];
+  const a = getAdapter(dbType);
+  const reg = isReg(i);
+  const rw = hasWrite(i);
+  const slideover = $("#slideover");
+  slideover.innerHTML = `
+    <div class="so-header">
+      <div class="so-title">
+        <div class="db-icon ${dbType}">${dbType[0].toUpperCase()}</div>
+        <span>${code}</span>
+        <span class="text-mut" style="font-weight:400">· ${a.displayName}</span>
+        ${(i.aliases||[]).map(al => `<span class="chip">${esc(al)}</span>`).join("")}
+      </div>
+      <button class="so-close" onclick="closeSlideOver()">${IC.x}</button>
+    </div>
+    <div class="so-tabs">
+      <div class="so-tab on">概览</div>
+      <div class="so-tab">权限</div>
+      <div class="so-tab">日志</div>
+      <div class="so-tab">高级</div>
+    </div>
+    <div class="so-body">
+      <div class="stack-4">
+        <div class="flex gap-2" style="flex-wrap:wrap">
+          <span class="badge ${rw?'warn':'ok'}"><span class="dot"></span>${rw?'读写':'只读'}</span>
+          <span class="badge ${reg?'ok':'neutral'}">${reg?'已注册':'未注册'}</span>
+          ${i.lastTest ? `<span class="badge ${i.lastTest.ok?'info':'no'}">${i.lastTest.ok?'自检通过':'自检异常'} · ${i.lastTest.ts}</span>` : ''}
+        </div>
+
+        <dl class="kv">
+          <dt>Host</dt><dd>${esc(i.host)}</dd><button class="icon-btn copy-btn" onclick="toast('已复制','ok')" title="复制">${IC.copy}</button>
+          <dt>Port</dt><dd>${i.port}</dd><span></span>
+          <dt>${dbType==='oracle'?'Service':'Database'}</dt><dd>${esc(i.database)}</dd><button class="icon-btn copy-btn">${IC.copy}</button>
+          <dt>User</dt><dd>${esc(i.user)}</dd><button class="icon-btn copy-btn">${IC.copy}</button>
+          <dt>密码</dt><dd>••••••••••••</dd><button class="icon-btn" title="修改">••••</button>
+          <dt>连接器名</dt><dd>${a.serverPrefix}${code}</dd><button class="icon-btn copy-btn">${IC.copy}</button>
+        </dl>
+
+        ${i.lastTest && !i.lastTest.ok ? `<div class="card tight" style="border-left:3px solid var(--danger); background:var(--danger-soft); color:var(--danger)">
+          <div class="fw-600" style="margin-bottom:4px">${IC.alert} 自检失败</div>
+          <div style="font-family:var(--font-mono); font-size:11.5px">${esc(i.lastTest.detail)}</div>
+        </div>` : ''}
+
+        <div class="card tight" style="background:var(--bg-inset); border:none">
+          <div class="fw-600" style="margin-bottom:8px">工具集 · ${i.tools.length} 个</div>
+          <div class="flex gap-2" style="flex-wrap:wrap">${i.tools.map(t => `<span class="chip mono">${t}</span>`).join("")}</div>
+        </div>
+
+        <div class="flex gap-2">
+          <button class="btn primary" onclick="toast('自检已启动…','info')">${IC.play} 一键自检</button>
+          <button class="btn secondary">${IC.rocket} ${reg?'重新注册':'注册到 mcp.json'}</button>
+        </div>
+      </div>
+    </div>
+    <div class="so-footer">
+      <button class="btn danger-ghost" onclick="openDeleteModal('${code}')">${IC.trash} 删除实例</button>
+      <button class="btn secondary" onclick="closeSlideOver()">关闭</button>
+    </div>
+  `;
+  slideover.classList.add("on");
+  $("#overlay").classList.add("on");
+}
+function closeSlideOver(){ $("#slideover").classList.remove("on"); $("#overlay").classList.remove("on"); STATE.ui.slideOver = null; }
+$("#overlay").onclick = () => { closeSlideOver(); $("#modal").classList.remove("on"); };
+
+/* ==========================================================================
+   Modals
+   ========================================================================== */
+function openDeleteModal(code){
+  const i = STATE.detect.state.envs[code];
+  const a = getAdapter(i.dbType);
+  const server = a.serverPrefix + code;
+  $("#modal").innerHTML = `
+    <div class="modal-header"><h3 style="margin:0; color:var(--danger)">${IC.alert} 删除实例「${code}」</h3><button class="so-close" onclick="closeModal()">${IC.x}</button></div>
+    <div class="modal-body">
+      <p style="margin:0 0 16px; color:var(--text-secondary)">此操作会：</p>
+      <ul style="margin:0 0 20px; padding-left:20px; line-height:1.8; color:var(--text-secondary); font-size:13px">
+        <li>从 <span class="mono">${esc(STATE.detect.mcpJsonPath)}</span> 移除 <span class="mono">${server}</span> 条目</li>
+        <li>实例目录 <span class="mono">${esc(STATE.detect.root)}/${i.dbType}/envs/${code}</span> 移入回收站</li>
+        <li>同步更新所有 Skill 副本的 environments.md 映射</li>
+      </ul>
+      <div class="field">
+        <div class="field-label">输入实例标识 <span class="mono">${code}</span> 以确认</div>
+        <input class="input" id="del-confirm" placeholder="${code}">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn secondary" onclick="closeModal()">取消</button>
+      <button class="btn danger" id="del-ok" disabled>确认删除</button>
+    </div>
+  `;
+  $("#modal").classList.add("on");
+  $("#overlay").classList.add("on");
+  const input = $("#del-confirm"), ok = $("#del-ok");
+  input.oninput = () => ok.disabled = input.value.trim() !== code;
+  ok.onclick = () => { toast(`已删除 ${code}`, "ok"); closeModal(); closeSlideOver(); delete STATE.detect.state.envs[code]; render(); };
+}
+function openInstanceEditor(){
+  $("#modal").innerHTML = `
+    <div class="modal-header"><h3 style="margin:0">添加实例</h3><button class="so-close" onclick="closeModal()">${IC.x}</button></div>
+    <div class="modal-body">
+      <div class="row">
+        <div class="field"><div class="field-label">数据源类型<span class="req">*</span></div>
+          <select class="select">${STATE.adapters.map(a => `<option value="${a.id}">${a.displayName}</option>`).join("")}</select></div>
+        <div class="field"><div class="field-label">实例标识<span class="req">*</span></div><input class="input" placeholder="uat"></div>
+      </div>
+      <div class="row-3">
+        <div class="field"><div class="field-label">主机</div><input class="input"></div>
+        <div class="field"><div class="field-label">端口</div><input class="input" value="1521"></div>
+        <div class="field"><div class="field-label">服务名</div><input class="input"></div>
+      </div>
+      <div class="row">
+        <div class="field"><div class="field-label">用户名</div><input class="input"></div>
+        <div class="field"><div class="field-label">密码</div><input class="input" type="password"></div>
+      </div>
+      <div class="field">
+        <div class="field-label">从现有实例复制配置</div>
+        <select class="select"><option>— 无 —</option>${Object.keys(STATE.detect.state.envs).map(c => `<option>${c}</option>`).join("")}</select>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn secondary" onclick="closeModal()">取消</button>
+      <button class="btn primary" onclick="toast('实例已保存','ok'); closeModal()">保存并自检</button>
+    </div>
+  `;
+  $("#modal").classList.add("on");
+  $("#overlay").classList.add("on");
+}
+function closeModal(){ $("#modal").classList.remove("on"); $("#overlay").classList.remove("on"); }
+
+/* ==========================================================================
+   Page: runtime
+   ========================================================================== */
+routes.runtime = () => {
+  $("#main").innerHTML = `
+    <div class="page">
+      <div class="page-title-row"><div><div class="page-title">Skill 与运行时</div><div class="page-sub">管理 MCP 服务端运行时、tap 代理与 Skill 目标目录</div></div></div>
+
+      <div class="card">
+        <div class="card-header"><h3>运行时状态</h3><button class="btn ghost sm">${IC.refresh} 重新部署</button></div>
+        <dl class="kv">
+          <dt>安装根目录</dt><dd>${esc(STATE.detect.root)}</dd><button class="icon-btn copy-btn">${IC.copy}</button>
+          <dt>Java</dt><dd>${esc(STATE.detect.javaCmd)}</dd><button class="icon-btn copy-btn">${IC.copy}</button>
+          <dt>tap 代理</dt><dd>${STATE.detect.tapDeployed ? '<span class="badge ok">已部署</span>' : '<span class="badge no">未部署</span>'}</dd><span></span>
+        </dl>
+        <div class="mt-6">
+          <div class="fw-600" style="margin-bottom:8px">各库 toolkit</div>
+          <table class="tbl">
+            <thead><tr><th>类型</th><th>Runtime</th><th>路径</th><th>操作</th></tr></thead>
+            <tbody>
+              ${STATE.adapters.map(a => `<tr>
+                <td><div class="flex items-center gap-2"><div class="db-icon ${a.id}">${a.id[0].toUpperCase()}</div>${a.displayName}</div></td>
+                <td><span class="badge neutral">${a.runtimeKind}</span></td>
+                <td class="mono text-mut" style="font-size:11.5px">${esc(STATE.detect.root)}/${a.id}/toolkit/</td>
+                <td><button class="btn ghost sm">重装</button></td>
+              </tr>`).join("")}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h3>Skill 目标目录</h3>
+          <button class="btn primary sm">${IC.plus} 添加位置</button>
+        </div>
+        <div class="tgt-list">
+          ${STATE.detect.state.skillTargets.map(t => `<div class="tgt">
+            <span class="badge ok"><span class="dot"></span>存在</span>
+            <span class="path">${esc(t)}</span>
+            <button class="btn ghost sm">${IC.copy}</button>
+            <button class="btn ghost sm">${IC.trash}</button>
+          </div>`).join("")}
+        </div>
+        <div class="mt-6 flex gap-2">
+          <button class="btn secondary">${IC.refresh} 同步映射</button>
+          <button class="btn secondary">${IC.rocket} 全量重部署</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><h3>Skill 内容预览</h3></div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px">
+          <div>
+            <div class="text-mut" style="font-size:11.5px; margin-bottom:4px">SKILL.md（静态正文）</div>
+            <pre class="mono" style="background:var(--bg-inset); padding:12px; border-radius:var(--r-sm); font-size:11.5px; max-height:220px; overflow:auto"># Oracle 数据库安全操作规范
+当用户请求查询 Oracle 数据库时：
+1. 明确实例：优先匹配别名 → 连接器
+2. 只读默认：非白名单工具需二次确认
+3. 大表防护：SELECT * 前先探查行数
+4. 密码保护：不明文回显、不写入日志</pre>
+          </div>
+          <div>
+            <div class="text-mut" style="font-size:11.5px; margin-bottom:4px">environments.md（动态映射）</div>
+            <pre class="mono" style="background:var(--bg-inset); padding:12px; border-radius:var(--r-sm); font-size:11.5px; max-height:220px; overflow:auto"># 实例映射表（自动同步）
+| 实例 | 连接器 | 说明 |
+| uat | oracle-uat | UAT · 验收 |
+| prod | oracle-prod | 生产 · 线上 |</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+};
+
+/* ==========================================================================
+   Page: diagnostics
+   ========================================================================== */
+routes.diagnostics = () => {
+  const insts = allInstances();
+  $("#main").innerHTML = `
+    <div class="page">
+      <div class="page-title-row"><div><div class="page-title">排障</div><div class="page-sub">环境探测、mcp.json 双视图、AI 平台接入指南</div></div></div>
+
+      <div class="card">
+        <div class="card-header"><h3>环境探测</h3><button class="btn ghost sm">${IC.refresh} 重新检测</button></div>
+        <dl class="kv">
+          <dt>HOME</dt><dd>${esc(STATE.detect.home)}</dd><button class="icon-btn copy-btn">${IC.copy}</button>
+          <dt>安装根目录</dt><dd>${esc(STATE.detect.root)}</dd><button class="icon-btn copy-btn">${IC.copy}</button>
+          <dt>Java</dt><dd>${esc(STATE.detect.javaCmd)}</dd><button class="icon-btn copy-btn">${IC.copy}</button>
+          <dt>QoderWork mcp.json</dt><dd>${esc(STATE.detect.mcpJsonPath)}</dd><button class="icon-btn copy-btn">${IC.copy}</button>
+          <dt>IDEA Qoder mcp.json</dt><dd>${esc(STATE.detect.qoderPluginMcpJsonPath)}</dd><button class="icon-btn copy-btn">${IC.copy}</button>
+        </dl>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><h3>mcp.json 双视图</h3><span class="text-mut" style="font-size:11.5px">高亮 DB MCP 相关条目</span></div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px">
+          <div>
+            <div class="text-mut" style="font-size:11.5px; margin-bottom:6px">QoderWork</div>
+            <div class="card tight" style="background:var(--bg-inset); border:none">
+              ${STATE.detect.registeredServers.length === 0 ? '<div class="text-mut">无 DB MCP 条目</div>' :
+                STATE.detect.registeredServers.map(s => `<div style="padding:6px 0; border-bottom:1px solid var(--border)"><span class="badge ok"><span class="dot"></span></span> <span class="mono">${s}</span></div>`).join("")}
+            </div>
+          </div>
+          <div>
+            <div class="text-mut" style="font-size:11.5px; margin-bottom:6px">IDEA Qoder 插件</div>
+            <div class="card tight" style="background:var(--bg-inset); border:none">
+              ${STATE.detect.qoderPluginRegisteredServers.length === 0 ? '<div class="text-mut">无 DB MCP 条目</div>' :
+                STATE.detect.qoderPluginRegisteredServers.map(s => `<div style="padding:6px 0"><span class="mono">${s}</span></div>`).join("")}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><h3>AI 平台接入指南</h3></div>
+        <div class="filter-bar">
+          <select class="select" style="max-width:220px"><option>选择实例…</option>${insts.map(i => `<option>${i.dbType}/${i.code}</option>`).join("")}</select>
+          <div class="seg">
+            <button class="on">QoderWork</button><button>Cursor</button><button>Claude Code</button><button>Codex CLI</button><button>Gemini CLI</button>
+          </div>
+        </div>
+        <pre class="mono" style="background:var(--bg-inset); padding:16px; border-radius:var(--r-sm); font-size:11.5px; line-height:1.7">{
+  "mcpServers": {
+    "oracle-uat": {
+      "command": "java",
+      "args": ["-jar","tap.jar","--","java","-jar","oracle-mcp-toolkit.jar"],
+      "enabled": true
+    }
+  }
+}</pre>
+        <div class="mt-4 flex gap-2">
+          <button class="btn secondary">${IC.copy} 复制配置模板</button>
+          <button class="btn ghost">打开 QoderWork 设置</button>
+        </div>
+      </div>
+    </div>
+  `;
+};
+
+/* ==========================================================================
+   Page: system
+   ========================================================================== */
+routes.system = () => {
+  $("#main").innerHTML = `
+    <div class="page">
+      <div class="page-title-row"><div><div class="page-title">系统</div><div class="page-sub">偏好、危险操作、关于</div></div></div>
+
+      <div class="card">
+        <div class="card-header"><h3>偏好设置</h3></div>
+        <dl class="kv">
+          <dt>主题</dt><dd>
+            <div class="seg"><button>浅色</button><button>深色</button><button class="on">跟随系统</button></div>
+          </dd><span></span>
+          <dt>语言</dt><dd><div class="seg"><button class="on">中文</button><button>English</button></div></dd><span></span>
+          <dt>自检超时</dt><dd><input class="input" style="max-width:120px" value="100"> <span class="text-mut">秒</span></dd><span></span>
+          <dt>显示首次向导</dt><dd><div class="switch"></div> <span class="text-mut">管理台顶部保留引导横幅</span></dd><span></span>
+        </dl>
+      </div>
+
+      <div class="card" style="border-color:var(--danger-soft)">
+        <div class="card-header"><h3 style="color:var(--danger)">${IC.alert} 危险操作</h3></div>
+        <p class="text-sec" style="margin-top:0">以下操作会永久改动文件系统与 mcp.json，请先预览影响清单再执行。所有删除走系统回收站。</p>
+
+        <div class="card tight" style="background:var(--bg-inset); border:none; margin-bottom:12px">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap">
+            <div>
+              <div class="fw-600">一键清空</div>
+              <div class="text-mut" style="font-size:12px">删除所有配置、Skill、注册条目，保留安装程序</div>
+            </div>
+            <div class="flex gap-2">
+              <button class="btn secondary" onclick="openPreviewModal('reset')">${IC.info} 预览影响</button>
+              <button class="btn danger" onclick="openDangerConfirm('reset')">执行</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card tight" style="background:var(--bg-inset); border:none">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap">
+            <div>
+              <div class="fw-600">一键卸载</div>
+              <div class="text-mut" style="font-size:12px">同「一键清空」，并移除安装程序与桌面快捷方式</div>
+            </div>
+            <div class="flex gap-2">
+              <button class="btn secondary" onclick="openPreviewModal('uninstall')">${IC.info} 预览影响</button>
+              <button class="btn danger" onclick="openDangerConfirm('uninstall')">执行</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><h3>关于</h3></div>
+        <dl class="kv">
+          <dt>版本</dt><dd class="mono">v0.3.0-redesign · <span class="text-mut">prototype</span></dd><span></span>
+          <dt>构建</dt><dd class="mono">be976a8 · 2026-08-29</dd><span></span>
+          <dt>许可</dt><dd>Apache-2.0</dd><span></span>
+        </dl>
+        <div class="mt-4 flex gap-2">
+          <button class="btn ghost">检查更新</button>
+          <button class="btn ghost">反馈问题</button>
+          <button class="btn ghost">开源仓库</button>
+        </div>
+      </div>
+    </div>
+  `;
+};
+
+/* ==========================================================================
+   Danger confirm flow (keyword input)
+   ========================================================================== */
+function openPreviewModal(kind){
+  const title = kind === 'reset' ? '一键清空 · 影响预览' : '一键卸载 · 影响预览';
+  const lines = [
+    ['将删除的 mcp.json 条目', STATE.detect.registeredServers.length + ' 项'],
+    ['将删除的 Skill 副本', STATE.detect.state.skillTargets.length + ' 个目录'],
+    ['将删除的实例配置', Object.keys(STATE.detect.state.envs).length + ' 个实例'],
+    ['将移入回收站的根目录', STATE.detect.root],
+    ['将保留', kind === 'reset' ? '安装程序本身' : '无（本程序将退出）']
+  ];
+  $("#modal").innerHTML = `
+    <div class="modal-header"><h3 style="margin:0">${IC.info} ${title}</h3><button class="so-close" onclick="closeModal()">${IC.x}</button></div>
+    <div class="modal-body">
+      <dl class="kv">
+        ${lines.map(l => `<dt>${l[0]}</dt><dd>${esc(l[1])}</dd><span></span>`).join("")}
+      </dl>
+    </div>
+    <div class="modal-footer"><button class="btn secondary" onclick="closeModal()">知道了</button></div>
+  `;
+  $("#modal").classList.add("on");
+  $("#overlay").classList.add("on");
+}
+function openDangerConfirm(kind){
+  const keyword = kind === 'reset' ? 'RESET' : 'UNINSTALL';
+  $("#modal").innerHTML = `
+    <div class="modal danger">
+      <div class="modal-header"><h3 style="margin:0">${IC.alert} 确认${kind === 'reset' ? '清空' : '卸载'}</h3><button class="so-close" onclick="closeModal()">${IC.x}</button></div>
+      <div class="modal-body">
+        <p style="margin-top:0">此操作不可撤销，请先<「预览影响」确认所有将被删除的资源。</p>
+        <div class="field">
+          <div class="field-label">输入 <span class="mono fw-600">${keyword}</span> 以确认</div>
+          <input class="input" id="danger-input" placeholder="${keyword}" autocomplete="off">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn secondary" onclick="closeModal()">取消</button>
+        <button class="btn danger" id="danger-ok" disabled>确认执行</button>
+      </div>
+    </div>
+  `;
+  $("#modal").classList.add("on");
+  $("#overlay").classList.add("on");
+  const inp = $("#danger-input"), ok = $("#danger-ok");
+  inp.oninput = () => ok.disabled = inp.value.trim() !== keyword;
+  ok.onclick = () => { closeModal(); toast(`已${kind === 'reset' ? '清空' : '卸载'}`, 'ok'); };
+}
+
+/* ==========================================================================
+   Command palette (⌘K)
+   ========================================================================== */
+const CMDS = [
+  { group:"跳转", label:"总览", hint:"g o", run:()=>location.hash="#/overview" },
+  { group:"跳转", label:"实例列表", hint:"g i", run:()=>location.hash="#/instances" },
+  { group:"跳转", label:"Skill 与运行时", hint:"g r", run:()=>location.hash="#/runtime" },
+  { group:"跳转", label:"排障", hint:"g d", run:()=>location.hash="#/diagnostics" },
+  { group:"跳转", label:"系统", hint:"g s", run:()=>location.hash="#/system" },
+  { group:"动作", label:"添加实例", hint:"⌘N", run:()=>openInstanceEditor() },
+  { group:"动作", label:"一键自检全部", hint:"", run:()=>toast('全部自检已启动','info') },
+  { group:"动作", label:"切换主题", hint:"", run:()=>$("#theme-toggle").click() },
+];
+function buildCmdList(){
+  Object.entries(STATE.detect.state.envs).forEach(([code,i]) => CMDS.push({ group:"跳转", label:`实例 · ${i.dbType}/${code}`, hint:"", run:()=>openSlideOver(i.dbType, code) }));
+}
+buildCmdList();
+
+let cmdOpen = false, cmdIdx = 0;
+function openCmd(){ $("#cmd").classList.add("on"); $("#cmd-input").value=""; $("#cmd-input").focus(); cmdOpen=true; cmdIdx=0; renderCmd(""); }
+function closeCmd(){ $("#cmd").classList.remove("on"); cmdOpen=false; }
+function renderCmd(q){
+  const items = CMDS.filter(c => !q || c.label.toLowerCase().includes(q.toLowerCase()));
+  const groups = {};
+  items.forEach((c,i) => { (groups[c.group] = groups[c.group] || []).push({...c, idx:i}); });
+  $("#cmd-results").innerHTML = Object.entries(groups).map(([g, list]) => `
+    <div class="group-label">${g}</div>
+    ${list.map(c => `<div class="item ${c.idx===cmdIdx?'on':''}" data-idx="${c.idx}">${IC.right}<span>${esc(c.label)}</span><span class="shortcut">${c.hint}</span></div>`).join("")}
+  `).join("") || `<div class="empty" style="padding:32px"><p>无匹配结果</p></div>`;
+  $$("#cmd-results .item").forEach(el => el.onclick = () => { CMDS[+el.dataset.idx].run(); closeCmd(); });
+}
+$("#cmd-open").onclick = openCmd;
+$("#cmd-input").addEventListener("input", e => { cmdIdx=0; renderCmd(e.target.value); });
+$("#cmd-input").addEventListener("keydown", e => {
+  const items = $$("#cmd-results .item");
+  if (e.key === "ArrowDown"){ cmdIdx = Math.min(cmdIdx+1, items.length-1); renderCmd($("#cmd-input").value); }
+  else if (e.key === "ArrowUp"){ cmdIdx = Math.max(cmdIdx-1, 0); renderCmd($("#cmd-input").value); }
+  else if (e.key === "Enter"){ items[cmdIdx]?.click(); }
+  else if (e.key === "Escape"){ closeCmd(); }
+});
+document.addEventListener("keydown", e => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k"){ e.preventDefault(); openCmd(); }
+  else if (e.key === "Escape"){ if (cmdOpen) closeCmd(); else { closeSlideOver(); closeModal(); } }
+});
+
+/* ==========================================================================
+   Theme toggle
+   ========================================================================== */
+$("#theme-toggle").onclick = () => {
+  const html = document.documentElement;
+  const next = html.dataset.theme === "light" ? "dark" : "light";
+  html.dataset.theme = next;
+  $("#theme-icon").innerHTML = next === "dark"
+    ? '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>'
+    : '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>';
+};
+
+/* ==========================================================================
+   Sidebar collapse
+   ========================================================================== */
+$("#collapse-btn").onclick = () => $("#sidebar").classList.toggle("collapsed");
+
+/* ==========================================================================
+   Nav wiring
+   ========================================================================== */
+$$(".side-item[data-route]").forEach(el => el.onclick = () => location.hash = "#/" + el.dataset.route);
+$("#nav-inst-count").textContent = Object.keys(STATE.detect.state.envs).length;
+
+/* ==========================================================================
+   Boot
+   ========================================================================== */
+if (!location.hash) location.hash = STATE.setupCompleted ? "#/instances" : "#/welcome";
+render();
+</script>
+</body>
+</html>
