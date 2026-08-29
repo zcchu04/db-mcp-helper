@@ -26,9 +26,8 @@
       "icons/icon.ico"
     ],
     "resources": [
-      { "from": "../bundle", "to": "bundle" }
+      "../bundle"
     ],
-    "shortcuts": true,
     "createUpdaterArtifacts": false
   },
   "plugins": {}
