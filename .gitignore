@@ -5,6 +5,16 @@ dist/
 # Maven 构建产物
 **/target/
 **/*.class
+# maven-shade-plugin 自动生成的降级 pom
+setup-app/dependency-reduced-pom.xml
+
+# Tauri 桌面壳构建中间产物
+shell/node_modules/
+shell/src-tauri/target/
+shell/bundle/
+
+# 个人开发日志（不入库）
+.workbuddy/
 
 # 内嵌的大体积二进制资源（CI 会重新生成，本地按需生成）
 setup-app/src/main/resources/toolkit/
