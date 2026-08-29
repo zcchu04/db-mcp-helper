@@ -2,13 +2,13 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
-  <groupId>com.oraclemcp</groupId>
-  <artifactId>oracle-mcp-install-tools</artifactId>
-  <version>0.1.0</version>
+  <groupId>com.dbmcp</groupId>
+  <artifactId>db-mcp-install-tools</artifactId>
+  <version>0.2.0</version>
   <packaging>pom</packaging>
 
-  <name>oracle-mcp-install-tools</name>
-  <description>Oracle MCP 可视化安装器（M2：java -jar 形态全链路）</description>
+  <name>db-mcp-install-tools</name>
+  <description>DB MCP Helper：多数据库 MCP 可视化安装器（Oracle / MySQL，按库分目录 + 适配器驱动）</description>
 
   <modules>
     <module>mcp-tap</module>

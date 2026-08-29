@@ -1,4 +1,4 @@
-package com.oraclemcp.setup;
+package com.dbmcp.setup;
 
 import java.io.IOException;
 import java.nio.file.Files;

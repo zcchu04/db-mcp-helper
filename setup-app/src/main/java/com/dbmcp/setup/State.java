@@ -1,4 +1,4 @@
-package com.oraclemcp.setup;
+package com.dbmcp.setup;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -13,7 +13,7 @@ import java.util.Map;
 
 /**
  * 安装状态（state.json）：运行时版本、环境清单、Skill 部署位置。
- * 支撑管理台展示、environments.md 同步与幂等判断。
+ * 支撑管理台展示、environments.md 同步与幂等判断。跨所有数据库类型共享一份。
  */
 public final class State {
 
@@ -30,10 +30,21 @@ public final class State {
 
     /** 单环境元数据。 */
     public static final class EnvInfo {
+        public String dbType;            // 数据库类型 id（oracle / mysql）
         public List<String> aliases = new ArrayList<>();
         public List<String> tools = new ArrayList<>();
         public boolean registered;
         public LastTest lastTest;
+
+        // --- 连接要素：Node 类服务器（MySQL）需要在启动时注入环境变量，故在 state 中留存 ---
+        public String host;
+        public int port;
+        /** Oracle 为 service name，MySQL 为 database 名。 */
+        public String database;
+        public String user;
+        /** 明文口令仅保存在用户本机 state.json（与 config.yaml / .env 同等级别）。 */
+        public String password;
+        public String url;
     }
 
     /** 最近一次自检快照。 */

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "DB MCP Helper",
+  "version": "1.0.0",
+  "identifier": "com.dbmcp.helper",
+  "build": {
+    "beforeDevCommand": "echo",
+    "devUrl": "http://127.0.0.1:8765",
+    "beforeBuildCommand": "echo",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi", "nsis"],
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "resources": [
+      { "from": "../bundle", "to": "bundle" }
+    ],
+    "shortcuts": true,
+    "createUpdaterArtifacts": false
+  },
+  "plugins": {}
+}

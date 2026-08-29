@@ -3,16 +3,16 @@
   <modelVersion>4.0.0</modelVersion>
 
   <parent>
-    <groupId>com.oraclemcp</groupId>
-    <artifactId>oracle-mcp-install-tools</artifactId>
-    <version>0.1.0</version>
+    <groupId>com.dbmcp</groupId>
+    <artifactId>db-mcp-install-tools</artifactId>
+    <version>0.2.0</version>
   </parent>
 
   <artifactId>setup-app</artifactId>
   <packaging>jar</packaging>
 
   <name>setup-app</name>
-  <description>Oracle MCP 安装向导：本地 Web 向导 + 部署/配置/自检/注册/Skill 六模块</description>
+  <description>DB MCP Helper 安装向导：本地 Web 向导 + 部署/配置/自检/注册/Skill 六模块（多数据库适配器驱动）</description>
 
   <dependencies>
     <dependency>
@@ -23,7 +23,7 @@
   </dependencies>
 
   <build>
-    <finalName>oracle-mcp-setup</finalName>
+    <finalName>db-mcp-setup</finalName>
     <plugins>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
@@ -37,7 +37,7 @@
             <configuration>
               <transformers>
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                  <mainClass>com.oraclemcp.setup.SetupMain</mainClass>
+                  <mainClass>com.dbmcp.setup.SetupMain</mainClass>
                 </transformer>
               </transformers>
               <filters>

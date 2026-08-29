@@ -1,4 +1,4 @@
-package com.oraclemcp.setup;
+package com.dbmcp.setup;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -16,8 +16,14 @@ public final class ConfigParser {
 
     /** key: value 或 key=value 行。 */
     private static final Pattern LINE = Pattern.compile("^\\s*([A-Za-z][\\w.-]*)\\s*[:=]\\s*(.*?)\\s*$");
-    /** 简单形式 JDBC URL：jdbc:oracle:thin:@[//]host:port(/|:)service，@ 后斜杠 0-2 个均兼容。 */
-    private static final Pattern SIMPLE_URL = Pattern.compile("^jdbc:oracle:thin:@/{0,2}([^:/?]+):(\\d+)[/:]([^?;\\s]+).*$");
+    /**
+     * 简单形式 JDBC URL：兼容
+     * - Oracle: jdbc:oracle:thin:@[//]host:port(/|:)service
+     * - MySQL:  jdbc:mysql://host:port/db
+     * 捕获 [host, port, name]（name 为 Oracle 的 service 或 MySQL 的 database）。
+     */
+    private static final Pattern SIMPLE_URL = Pattern.compile(
+            "^jdbc:(?:oracle:thin:@/?/?|mysql://)([^:/?]+):(\\d+)[/:]([^?;\\s]+).*$");
 
     private ConfigParser() {
     }
@@ -44,7 +50,7 @@ public final class ConfigParser {
                 continue;
             }
             String key = m.group(1).toLowerCase();
-            int dot = key.lastIndexOf('.'); // 支持 spring.datasource.url 这类点分键，取末段匹配
+            int dot = key.lastIndexOf('.');
             if (dot >= 0) {
                 key = key.substring(dot + 1);
             }
@@ -77,7 +83,7 @@ public final class ConfigParser {
     }
 
     /**
-     * 拆分简单形式 JDBC URL 为 [host, port, service]；TNS 等复杂形式返回 null（调用方整体作为 URL 使用）。
+     * 拆分简单形式 JDBC URL 为 [host, port, name]；TNS 等复杂形式返回 null（调用方整体作为 URL 使用）。
      */
     public static String[] splitSimpleUrl(String url) {
         if (url == null) {

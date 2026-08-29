@@ -1,4 +1,4 @@
-package com.oraclemcp.setup;
+package com.dbmcp.setup;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -11,26 +11,25 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Skill 部署模块：静态正文 SKILL.md（打包资源）+ 动态环境映射 environments.md（按 state 生成）。
+ * Skill 部署模块：静态正文 SKILL.md（各库打包资源）+ 动态环境映射 environments.md（按 state 生成）。
+ * 每个数据库类型一个独立 Skill 目录（如 oracle-db-ops / mysql-db-ops），互不影响。
  * 支持多目标目录（多 agent），重复部署为覆盖更新；state 记录全部已部署目标以便后续同步。
  */
 public final class SkillService {
-
-    public static final String SKILL_DIR_NAME = "oracle-db-ops";
 
     private SkillService() {
     }
 
     /** 部署到指定 agent 技能根目录列表；返回每个目录的结果描述。 */
-    public static List<String> deploy(State st, List<String> targetRoots) throws IOException {
-        String skillMd = readResource("skill/SKILL.md");
-        String envMd = renderEnvironments(st);
+    public static List<String> deploy(State st, List<String> targetRoots, DbAdapter adapter) throws IOException {
+        String skillMd = readResource(adapter.skillResource());
+        String envMd = renderEnvironments(st, adapter);
         List<String> results = new ArrayList<>();
         for (String t : targetRoots) {
             if (t == null || t.isBlank()) {
                 continue;
             }
-            Path dir = Path.of(t).resolve(SKILL_DIR_NAME);
+            Path dir = Path.of(t).resolve(adapter.skillDir());
             Files.createDirectories(dir);
             Files.writeString(dir.resolve("SKILL.md"), skillMd, StandardCharsets.UTF_8);
             Files.writeString(dir.resolve("environments.md"), envMd, StandardCharsets.UTF_8);
@@ -43,11 +42,11 @@ public final class SkillService {
     }
 
     /** 仅同步 environments.md 到 state 记录过的全部目标（增删环境后调用）。 */
-    public static List<String> syncMappings(State st) throws IOException {
-        String envMd = renderEnvironments(st);
+    public static List<String> syncMappings(State st, DbAdapter adapter) throws IOException {
+        String envMd = renderEnvironments(st, adapter);
         List<String> updated = new ArrayList<>();
         for (String t : st.skillTargets) {
-            Path dir = Path.of(t).resolve(SKILL_DIR_NAME);
+            Path dir = Path.of(t).resolve(adapter.skillDir());
             if (Files.isDirectory(dir)) {
                 Files.writeString(dir.resolve("environments.md"), envMd, StandardCharsets.UTF_8);
                 updated.add(dir.toString());
@@ -56,13 +55,13 @@ public final class SkillService {
         return updated;
     }
 
-    /** 按环境清单生成映射表：编码 → 连接器 → 权限 → 工具 → 别名。 */
-    public static String renderEnvironments(State st) {
+    /** 按某库环境清单生成映射表：编码 → 连接器 → 权限 → 工具 → 别名。仅含该 dbType 的环境。 */
+    public static String renderEnvironments(State st, DbAdapter adapter) {
         StringBuilder sb = new StringBuilder();
-        sb.append("# Oracle 环境映射表\n\n");
-        sb.append("> 本文件由 Oracle MCP 安装器生成并同步维护，最后更新：").append(Instant.now()).append("\n");
+        sb.append("# ").append(adapter.displayName()).append(" 环境映射表\n\n");
+        sb.append("> 本文件由 DB MCP Helper 生成并同步维护，最后更新：").append(Instant.now()).append("\n");
         sb.append("> 用途：将用户的口语表达（编码、中文叫法、别名）映射到具体的 MCP 连接器。\n");
-        sb.append("> 识别规则见 SKILL.md「第一步：环境识别」。\n\n");
+        sb.append("> 识别规则见对应 SKILL.md「第一步：环境识别」。\n\n");
         if (st.envs.isEmpty()) {
             sb.append("（暂无已配置环境）\n");
             return sb.toString();
@@ -70,10 +69,15 @@ public final class SkillService {
         sb.append("| 编码 | 连接器 | 权限 | 工具清单 | 别名 |\n");
         sb.append("|---|---|---|---|---|\n");
         for (Map.Entry<String, State.EnvInfo> e : st.envs.entrySet()) {
+            if (!adapter.id().equals(e.getValue().dbType)) {
+                continue;
+            }
             State.EnvInfo info = e.getValue();
-            boolean writable = info.tools.contains("write-query");
+            boolean writable = adapter.runtimeKind() == DbAdapter.RuntimeKind.JAVA_JAR
+                    ? info.tools.contains("write-query")
+                    : info.tools.stream().anyMatch(t -> !t.equals("query"));
             sb.append("| ").append(e.getKey())
-                    .append(" | oracle-").append(e.getKey())
+                    .append(" | ").append(adapter.serverPrefix()).append(e.getKey())
                     .append(" | ").append(writable ? "读写" : "只读")
                     .append(" | ").append(String.join(", ", info.tools))
                     .append(" | ").append(info.aliases.isEmpty() ? "—" : String.join("、", info.aliases))

@@ -1,4 +1,4 @@
-package com.oraclemcp.setup;
+package com.dbmcp.setup;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -9,6 +9,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 多平台接入指南构建器：读取 platforms.json 平台清单，按环境实际注册命令
@@ -23,8 +24,8 @@ public final class PlatformGuide {
     }
 
     /** 生成指定环境的各平台接入指南（含预填模板）。 */
-    public static JsonObject guide(Path root, String env, List<String> tools) {
-        List<String> cmd = McpJson.buildCommand(root, env, tools);
+    public static JsonObject guide(Path baseDir, String dbId, String env, List<String> tools, DbAdapter adapter) {
+        List<String> cmd = adapter.buildCommand(baseDir, dbId, env, tools);
         JsonObject entry = new JsonObject();
         entry.addProperty("command", cmd.get(0));
         JsonArray args = new JsonArray();
@@ -32,18 +33,25 @@ public final class PlatformGuide {
             args.add(cmd.get(i));
         }
         entry.add("args", args);
+        Map<String, String> envVars = adapter.envVars("", "", "", adapter.defaultPort(), "");
+        if (!envVars.isEmpty()) {
+            JsonObject envObj = new JsonObject();
+            envVars.forEach(envObj::addProperty);
+            entry.add("env", envObj);
+        }
 
         JsonObject platformsRoot = loadPlatforms();
         JsonArray out = new JsonArray();
+        String serverName = adapter.serverPrefix() + env;
         for (var el : platformsRoot.getAsJsonArray("platforms")) {
             JsonObject p = el.getAsJsonObject();
             JsonObject item = p.deepCopy();
             String format = p.get("format").getAsString();
-            item.addProperty("template", renderTemplate(format, "oracle-" + env, entry));
+            item.addProperty("template", renderTemplate(format, serverName, entry));
             out.add(item);
         }
         JsonObject d = new JsonObject();
-        d.addProperty("serverName", "oracle-" + env);
+        d.addProperty("serverName", serverName);
         d.add("platforms", out);
         return d;
     }
@@ -66,6 +74,10 @@ public final class PlatformGuide {
                     sb.append(toml(args.get(i).getAsString()));
                 }
                 sb.append("]");
+                if (entry.has("env")) {
+                    JsonObject env = entry.getAsJsonObject("env");
+                    env.keySet().forEach(k -> sb.append("\n").append(k).append(" = ").append(toml(env.get(k).getAsString())));
+                }
                 return sb.toString();
             }
             case "mcpServers-json":

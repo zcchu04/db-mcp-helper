@@ -1,4 +1,4 @@
-package com.oraclemcp.setup;
+package com.dbmcp.setup;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -14,12 +14,15 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * QoderWork mcp.json 合并写入模块。
  *
  * <p>语义：解析现有 JSON → 只增改目标 server 键 → 回写；解析失败抛异常由调用方提示手工处理，
  * 绝不盲覆盖。每次写前生成时间戳备份。
+ *
+ * <p>注册条目支持可选 {@code env} 块（MySQL 等以环境变量传连接配置的 server 使用）。
  */
 public final class McpJson {
 
@@ -39,21 +42,17 @@ public final class McpJson {
         return names;
     }
 
-    /** 注册/更新一个环境的 MCP 条目（tap 包 toolkit 链路），同时写入 QoderWork 和 IDEA Qoder 插件配置。 */
-    public static JsonObject register(Path mcpJson, String serverName, List<String> command) throws IOException {
-        JsonObject entry = buildEntry(command);
+    /** 注册/更新一个环境的 MCP 条目（tap 包 toolkit/server 链路），同时写入 QoderWork 和 IDEA Qoder 插件配置。 */
+    public static JsonObject register(Path mcpJson, String serverName, List<String> command, Map<String, String> env) throws IOException {
+        JsonObject entry = buildEntry(command, env);
 
-        // 写入 QoderWork 配置
         writeToMcpJson(mcpJson, serverName, entry);
-
-        // 写入 IDEA Qoder 插件配置
         Path qoderPluginMcpJson = Cfg.qoderPluginMcpJsonPath();
         writeToMcpJson(qoderPluginMcpJson, serverName, entry);
-
         return entry;
     }
 
-    private static JsonObject buildEntry(List<String> command) {
+    private static JsonObject buildEntry(List<String> command, Map<String, String> env) {
         JsonObject entry = new JsonObject();
         entry.addProperty("command", command.get(0));
         JsonArray args = new JsonArray();
@@ -62,6 +61,11 @@ public final class McpJson {
         }
         entry.add("args", args);
         entry.addProperty("enabled", true);
+        if (env != null && !env.isEmpty()) {
+            JsonObject envObj = new JsonObject();
+            env.forEach(envObj::addProperty);
+            entry.add("env", envObj);
+        }
         return entry;
     }
 
@@ -114,16 +118,6 @@ public final class McpJson {
         hit.forEach(servers::remove);
         writeRoot(mcpJson, root);
         return hit.size();
-    }
-
-    /** 组装 tap 链路的完整命令行。 */
-    public static List<String> buildCommand(Path root, String env, List<String> tools) {
-        String java = Installer.resolveJava(root); // 优先安装目录精简运行时，目标机器零 Java 依赖
-        return List.of(
-                java, "-jar", root.resolve(Cfg.TAP_FILE_NAME).toString(),
-                "--log", Installer.callLog(root, env).toString(), "--",
-                java, "-DconfigFile=" + Installer.configYaml(root, env).toString(),
-                "-Dtools=" + String.join(",", tools), "-jar", root.resolve(Cfg.TOOLKIT_FILE_NAME).toString());
     }
 
     private static JsonObject readRoot(Path mcpJson) throws IOException {

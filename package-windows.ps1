@@ -1,12 +1,12 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Build Oracle MCP Helper Windows installer (.exe / .msi / app-image).
+  Build DB MCP Helper Windows installer (.exe / .msi / app-image).
 .DESCRIPTION
   1. Verify JDK 17 (jpackage/jlink/jdeps present)
   2. Locate Inno Setup (for final .exe) or WiX Toolset (for .msi)
-  3. Build mcp-tap and locate oracle-db-mcp-toolkit
-  4. jlink MCP runtime and installer runtime
+  3. Build mcp-tap and locate per-DB toolkits (Oracle toolkit JAR, optional MySQL toolkit + Node runtime)
+  4. jlink unified runtime (for both installer GUI and MCP server)
   5. Stage embedded resources and build setup-app fat jar
   6. jpackage --type app-image, then wrap with Inno Setup (default .exe)
      - Inno gives a real directory chooser + an uninstaller (unins000.exe)
@@ -24,9 +24,9 @@ param(
     [string]$Type = "exe",
 
     # App metadata (override to bump versions without editing the script)
-    [string]$AppName = "Oracle MCP Helper",
+    [string]$AppName = "DB MCP Helper",
     [string]$AppVersion = "1.0.0",
-    [string]$UpgradeUuid = "6a8b5c2d-9e4f-4a1b-8c7d-3e5f6a9b0C1d",
+    [string]$UpgradeUuid = "7b1c4e3a-2f5d-4a8b-9c6e-1d3f5a7b9c2d",
 
     # External toolkit JAR (CI / other machines). Falls back to a local build,
     # then to the ~/.qoderwork cache (last resort — machine-specific).
@@ -38,7 +38,20 @@ param(
 
     # Override the resource sources directly (advanced). Empty = auto-resolve.
     [string]$TapJar = "",
-    [string]$RuntimeZip = ""
+    [string]$RuntimeZip = "",
+
+    # Optional MySQL toolkit (dir or file). Falls back to a local build, then to a
+    # ~/.qoderwork cache. Empty = MySQL support staged as unavailable until supplied.
+    [string]$MysqlToolkit = "",
+
+    # Optional bundled Node runtime for MySQL (zip or directory). Empty = skip.
+    [string]$NodeRuntimeZip = "",
+
+    # Desktop shell: "inno" wraps the jpackage app-image with Inno Setup (legacy
+    # browser-based wizard). "tauri" builds a real desktop app via Tauri's WebView
+    # shell that embeds the Java backend (no system browser popup).
+    [ValidateSet("inno", "tauri")]
+    [string]$Shell = "inno"
 )
 
 $ErrorActionPreference = "Stop"
@@ -142,32 +155,66 @@ function Resolve-Toolkit {
     throw "oracle-db-mcp-toolkit-1.0.0.jar not found. Build oracle/mcp, pass -ToolkitJar <path>, or place jar at $cached"
 }
 
+function Resolve-MysqlToolkit {
+    if ($MysqlToolkit -and (Test-Path $MysqlToolkit)) {
+        Write-Host "[OK] Using -MysqlToolkit: $MysqlToolkit"
+        return (Resolve-Path $MysqlToolkit).Path
+    }
+    $src = "$PSScriptRoot\mysql-mcp-src\target\mysql-mcp-server"
+    $cached = "$env:USERPROFILE\.qoderwork\mcp\mysql-mcp-server"
+    if (Test-Path $src) {
+        Write-Host "[OK] Using built MySQL toolkit: $src"
+        return $src
+    }
+    if (Test-Path $cached) {
+        Write-Host "[OK] Using cached MySQL toolkit: $cached"
+        return $cached
+    }
+    Write-Host "[WARN] MySQL toolkit not found; MySQL support will be unavailable until supplied (-MysqlToolkit)."
+    return $null
+}
+
+function Resolve-NodeRuntime {
+    if ($NodeRuntimeZip -and (Test-Path $NodeRuntimeZip)) {
+        Write-Host "[OK] Using -NodeRuntimeZip: $NodeRuntimeZip"
+        return (Resolve-Path $NodeRuntimeZip).Path
+    }
+    $src = "$PSScriptRoot\dist\node-runtime.zip"
+    if (Test-Path $src) {
+        Write-Host "[OK] Using local Node runtime: $src"
+        return $src
+    }
+    Write-Host "[WARN] Node runtime not found; MySQL support will be unavailable until supplied (-NodeRuntimeZip)."
+    return $null
+}
+
 function Invoke-McpTapBuild {
     Write-Host "[INFO] Building mcp-tap ..."
     & mvn package -DskipTests -q -pl mcp-tap
     if ($LASTEXITCODE -ne 0) { throw "mcp-tap build failed" }
 }
 
-function Invoke-JlinkMcpRuntime {
+function Invoke-JlinkRuntime {
     param([string]$ToolkitJar)
-    Write-Host "[INFO] jlink MCP runtime ..."
+    Write-Host "[INFO] jlink unified runtime ..."
     $mods = (cmd /c "jdeps --ignore-missing-deps --print-module-deps `"$ToolkitJar`" 2>&1") | Where-Object { $_ -notmatch "^WARNING:" }
     if ($LASTEXITCODE -ne 0) { throw "jdeps failed" }
     $full = @(
         "java.base", "java.logging", "java.xml", "java.desktop",
         "java.instrument", "java.management", "java.naming", "java.net.http",
-        "java.rmi", "java.sql", "jdk.net", "jdk.security.jgss"
+        "java.rmi", "java.sql", "jdk.net", "jdk.security.jgss",
+        "jdk.httpserver"
     )
     $all = (($full + ($mods -split ",")) | Sort-Object -Unique | Where-Object { $_.Trim() } | ForEach-Object { $_.Trim() }) -join ","
-    Remove-Item -Recurse -Force "$PSScriptRoot\dist\mcp-runtime" -ErrorAction SilentlyContinue
-    & jlink --add-modules $all --output "$PSScriptRoot\dist\mcp-runtime" `
+    Remove-Item -Recurse -Force "$PSScriptRoot\dist\runtime" -ErrorAction SilentlyContinue
+    & jlink --add-modules $all --output "$PSScriptRoot\dist\runtime" `
         --strip-debug --no-header-files --no-man-pages --compress 2
-    if ($LASTEXITCODE -ne 0) { throw "jlink MCP runtime failed" }
-    $zip = "$PSScriptRoot\dist\mcp-runtime.zip"
+    if ($LASTEXITCODE -ne 0) { throw "jlink runtime failed" }
+    $zip = "$PSScriptRoot\dist\runtime.zip"
     $retries = 0
     while ($retries -lt 5) {
         try {
-            Compress-Archive -Path "$PSScriptRoot\dist\mcp-runtime" -DestinationPath $zip -Force -ErrorAction Stop
+            Compress-Archive -Path "$PSScriptRoot\dist\runtime" -DestinationPath $zip -Force -ErrorAction Stop
             break
         } catch {
             $retries++
@@ -176,14 +223,6 @@ function Invoke-JlinkMcpRuntime {
             Start-Sleep -Seconds 2
         }
     }
-}
-
-function Invoke-JlinkAppRuntime {
-    Write-Host "[INFO] jlink installer runtime ..."
-    Remove-Item -Recurse -Force "$PSScriptRoot\dist\app-runtime" -ErrorAction SilentlyContinue
-    & jlink --add-modules java.base,java.desktop,java.logging,jdk.httpserver `
-        --output "$PSScriptRoot\dist\app-runtime" --strip-debug --no-header-files --no-man-pages --compress 2
-    if ($LASTEXITCODE -ne 0) { throw "jlink installer runtime failed" }
 }
 
 function Get-GitBash {
@@ -204,14 +243,16 @@ function Invoke-StageResources {
     Write-Host "[INFO] Staging resources ..."
     # Resolve the three resource sources (caller may override via -TapJar/-RuntimeZip)
     $tap = if ($TapJar) { $TapJar } else { "$PSScriptRoot\mcp-tap\target\mcp-tap.jar" }
-    $rt  = if ($RuntimeZip) { $RuntimeZip } else { "$PSScriptRoot\dist\mcp-runtime.zip" }
+    $rt  = if ($RuntimeZip) { $RuntimeZip } else { "$PSScriptRoot\dist\runtime.zip" }
     if (-not (Test-Path $tap)) { throw "mcp-tap.jar not found; run mvn package -pl mcp-tap first" }
-    if (-not (Test-Path $rt)) { throw "dist\mcp-runtime.zip not found; run jlink first" }
+    if (-not (Test-Path $rt)) { throw "dist\runtime.zip not found; run jlink first" }
 
     # Pass all three paths as env; the stage script becomes a pure copier.
     $env:TOOLKIT_SRC = $ToolkitJar
     $env:TAP_JAR     = $tap
     $env:RUNTIME_ZIP = $rt
+    if ($MysqlToolkit) { $env:MYSQL_TOOLKIT_SRC = $MysqlToolkit }
+    if ($NodeRuntimeZip) { $env:NODE_RUNTIME_ZIP = $NodeRuntimeZip }
 
     # Prefer the native cmd script (no Git for Windows dependency). Fall back to
     # git-bash + .sh only when cmd is unavailable (e.g. non-Windows).
@@ -238,28 +279,36 @@ function Invoke-AppImage {
     Write-Host "[INFO] jpackage --type app-image ..."
     Remove-Item -Recurse -Force "$PSScriptRoot\dist\app-staging", "$PSScriptRoot\dist\app-image" -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path "$PSScriptRoot\dist\app-staging" | Out-Null
-    Copy-Item "$PSScriptRoot\setup-app\target\oracle-mcp-setup.jar" "$PSScriptRoot\dist\app-staging\"
+    Copy-Item "$PSScriptRoot\setup-app\target\db-mcp-setup.jar" "$PSScriptRoot\dist\app-staging\"
 
     $args = @(
         "--type", "app-image",
         "--name", $AppName,
         "--app-version", $AppVersion,
-        "--vendor", "oraclemcp",
+        "--vendor", "dbmcp",
         "--input", "$PSScriptRoot\dist\app-staging",
-        "--main-jar", "oracle-mcp-setup.jar",
-        "--main-class", "com.oraclemcp.setup.SetupMain",
-        "--runtime-image", "$PSScriptRoot\dist\app-runtime",
+        "--main-jar", "db-mcp-setup.jar",
+        "--main-class", "com.dbmcp.setup.SetupMain",
+        "--runtime-image", "$PSScriptRoot\dist\runtime",
         "--dest", "$PSScriptRoot\dist\app-image",
         "--icon", "$PSScriptRoot\design\icon.ico"
     )
     & jpackage @args
     if ($LASTEXITCODE -ne 0) { throw "jpackage app-image failed" }
+
+    # 复制 prefer-system-Java 启动器作为应用入口（Inno 快捷方式指向它）
+    $appImage = "$PSScriptRoot\dist\app-image\$AppName"
+    $launcher = "$PSScriptRoot\launcher\db-mcp-helper.cmd"
+    if (Test-Path $launcher) {
+        Copy-Item $launcher "$appImage\db-mcp-helper.cmd" -Force
+        Write-Host "[OK] Launcher staged into app-image"
+    }
 }
 
 function Invoke-InnoWrap {
     param([string]$InnoDir)
     Write-Host "[INFO] Inno Setup wrap (ISCC) ..."
-    $iss = "$PSScriptRoot\installer\oracle-mcp.iss"
+    $iss = "$PSScriptRoot\installer\db-mcp.iss"
     if (-not (Test-Path $iss)) { throw "Inno script not found: $iss" }
     Remove-Item -Recurse -Force "$PSScriptRoot\dist\pkg" -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path "$PSScriptRoot\dist\pkg" | Out-Null
@@ -279,17 +328,17 @@ function Invoke-JpackageMsi {
     Write-Host "[INFO] jpackage --type msi ..."
     Remove-Item -Recurse -Force "$PSScriptRoot\dist\app-staging", "$PSScriptRoot\dist\pkg" -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path "$PSScriptRoot\dist\app-staging" | Out-Null
-    Copy-Item "$PSScriptRoot\setup-app\target\oracle-mcp-setup.jar" "$PSScriptRoot\dist\app-staging\"
+    Copy-Item "$PSScriptRoot\setup-app\target\db-mcp-setup.jar" "$PSScriptRoot\dist\app-staging\"
 
     $args = @(
         "--type", "msi",
         "--name", $AppName,
         "--app-version", $AppVersion,
-        "--vendor", "oraclemcp",
+        "--vendor", "dbmcp",
         "--input", "$PSScriptRoot\dist\app-staging",
-        "--main-jar", "oracle-mcp-setup.jar",
-        "--main-class", "com.oraclemcp.setup.SetupMain",
-        "--runtime-image", "$PSScriptRoot\dist\app-runtime",
+        "--main-jar", "db-mcp-setup.jar",
+        "--main-class", "com.dbmcp.setup.SetupMain",
+        "--runtime-image", "$PSScriptRoot\dist\runtime",
         "--dest", "$PSScriptRoot\dist\pkg",
         "--icon", "$PSScriptRoot\design\icon.ico",
         "--win-menu",
@@ -306,17 +355,66 @@ function Invoke-JpackageMsi {
     }
 }
 
+function Invoke-TauriShell {
+    Write-Host "[INFO] Tauri desktop shell build ..."
+    # npm (managed Node) drives the Tauri CLI; cargo (Rust) must be on PATH.
+    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+        throw "npm not found; install Node.js (https://nodejs.org) to build the Tauri shell"
+    }
+    if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+        throw "cargo (Rust) not found; install Rust (https://www.rust-lang.org) to build the Tauri shell"
+    }
+
+    # Assemble the bundle dir Tauri ships as resources: the fat jar (already
+    # contains toolkit/tap/skill on the classpath) plus the optional JRE fallback.
+    $bundle = "$PSScriptRoot\shell\bundle"
+    New-Item -ItemType Directory -Force -Path $bundle | Out-Null
+
+    $jar = "$PSScriptRoot\setup-app\target\db-mcp-setup.jar"
+    if (-not (Test-Path $jar)) { throw "db-mcp-setup.jar not found; run setup-app build first" }
+    Copy-Item $jar "$bundle\db-mcp-setup.jar" -Force
+
+    $rt = "$PSScriptRoot\dist\runtime"
+    if (Test-Path $rt) {
+        Copy-Item $rt "$bundle\runtime" -Recurse -Force
+        Write-Host "[OK] Bundled JRE staged into shell\bundle\runtime (fallback when no system JDK 17)"
+    } else {
+        Write-Host "[WARN] dist\runtime not found; Tauri build will rely on a system JDK 17 only"
+    }
+
+    Push-Location "$PSScriptRoot\shell"
+    try {
+        & npm install
+        if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
+        & npm run tauri build
+        if ($LASTEXITCODE -ne 0) { throw "tauri build failed" }
+    } finally {
+        Pop-Location
+    }
+
+    Write-Host "[DONE] Tauri installer under shell\src-tauri\target\release\bundle\"
+}
+
 Set-Location $PSScriptRoot
 Assert-Command -Names @("mvn")
 Test-Java17
 
 $toolkit = Resolve-Toolkit
+$MysqlToolkit = Resolve-MysqlToolkit
+$NodeRuntimeZip = Resolve-NodeRuntime
 
 Invoke-McpTapBuild
-Invoke-JlinkMcpRuntime -ToolkitJar $toolkit
-Invoke-JlinkAppRuntime
+Invoke-JlinkRuntime -ToolkitJar $toolkit
 Invoke-StageResources -ToolkitJar $toolkit
 Invoke-SetupAppBuild
+
+if ($Shell -eq "tauri") {
+    # Real desktop app: Tauri spawns the Java backend and shows it in a WebView
+    # window (no system browser). The jlink runtime above is shipped as the JRE
+    # fallback; the installer itself is produced by `tauri build`, not jpackage.
+    Invoke-TauriShell
+    return
+}
 
 if ($Type -eq "exe") {
     # app-image (no WiX) → Inno Setup wraps it into a real installer

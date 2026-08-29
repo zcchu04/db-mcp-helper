@@ -1,4 +1,4 @@
-package com.oraclemcp.setup;
+package com.dbmcp.setup;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -18,38 +18,40 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
- * Oracle MCP 安装向导入口：JDK 内置 HttpServer 提供向导页与 REST API。
+ * DB MCP Helper 安装向导入口：JDK 内置 HttpServer 提供向导页与 REST API。
+ * 引擎对具体数据库无感知，全部行为由 DbAdapter 驱动。
  *
  * <p>API 一览（JSON）：
- * GET /api/detect · POST /api/deploy · POST /api/env/config · POST /api/env/test ·
+ * GET /api/detect · GET /api/adapters · POST /api/deploy · POST /api/env/config ·
+ * POST /api/env/parse · POST /api/env/test · POST /api/env/test/poll ·
  * POST /api/env/register · POST /api/env/delete · GET /api/env/log ·
- * POST /api/skill/deploy · POST /api/skill/sync
+ * GET /api/env/guide · POST /api/skill/deploy · POST /api/skill/sync ·
+ * POST /api/skill/targets · POST /api/reset · POST /api/uninstall
  */
 public final class SetupMain {
 
     private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
-    /** 服务实例引用，卸载流程需要主动停机。 */
     private static HttpServer serverRef;
-    /** 异步自检结果缓存：env → 最近一次结果（running/完成） */
     private static final java.util.concurrent.ConcurrentHashMap<String, SelfTest.Result> TEST_RESULTS = new java.util.concurrent.ConcurrentHashMap<>();
-    /** 标记正在运行中的自检 */
     private static final SelfTest.Result RUNNING_MARKER = new SelfTest.Result();
     static { RUNNING_MARKER.detail = "running"; }
 
+    static boolean NO_BROWSER = false;
+
     public static void main(String[] args) {
-        // 初始化日志（写入安装目录下的 logs/ 目录）
+        for (String a : args) {
+            if ("--no-browser".equals(a)) NO_BROWSER = true;
+        }
         Path logDir = resolveLogDir();
         java.io.PrintStream log = openLog(logDir);
-        log.println("=== Oracle MCP Setup 启动日志 ===");
-        log.println("时间: " + java.time.Instant.now());
+        log.println("=== DB MCP Helper 启动日志 ===");
+        log.println("时间: " + Instant.now());
         log.println("Java 版本: " + System.getProperty("java.version"));
-        log.println("Java 主目录: " + System.getProperty("java.home"));
         log.println("工作目录: " + System.getProperty("user.dir"));
-        log.println("用户主目录: " + System.getProperty("user.home"));
         log.println("os.name: " + System.getProperty("os.name"));
-        log.println("os.arch: " + System.getProperty("os.arch"));
         log.println("jpackage.app-path: " + System.getProperty("jpackage.app-path", "(未设置)"));
         log.println("命令行参数: " + java.util.Arrays.toString(args));
         log.println();
@@ -58,33 +60,22 @@ public final class SetupMain {
             int port = Cfg.port();
             String url = "http://127.0.0.1:" + port;
             log.println("目标端口: " + port);
-            log.println("目标 URL: " + url);
 
-            // 检测是否已有 Oracle MCP Setup 实例在运行（通过探测 /api/detect 接口）
-            log.println("检测已有实例...");
             if (isOurServerRunning(port)) {
-                log.println("检测到 Oracle MCP Setup 已在运行，直接打开浏览器...");
+                log.println("检测到 DB MCP Helper 已在运行，直接打开浏览器...");
                 openBrowser(url);
-                log.println("浏览器已打开，退出。");
                 return;
             }
-            log.println("未检测到已有实例，准备启动 HTTP 服务器...");
 
-            // 启动新实例
             HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
             server.createContext("/", SetupMain::handle);
             server.start();
             serverRef = server;
-            log.println("HTTP 服务器已启动，监听 " + url);
-            System.out.println("Oracle MCP Setup 已启动：" + url);
+            System.out.println("DB MCP Helper 已启动：" + url);
             openBrowser(url);
-            log.println("浏览器已打开。");
         } catch (Throwable t) {
             log.println("!!! 启动失败 !!!");
-            log.println("异常类型: " + t.getClass().getName());
-            log.println("异常消息: " + t.getMessage());
             t.printStackTrace(log);
-            // 同时输出到 stderr，jpackage 启动器会捕获 stderr
             t.printStackTrace(System.err);
         } finally {
             log.println("=== 日志结束 ===");
@@ -93,35 +84,28 @@ public final class SetupMain {
         }
     }
 
-    /** 定位日志目录：优先使用安装目录，其次使用用户主目录 */
     private static Path resolveLogDir() {
-        // jpackage 形态：jpackage.app-path 指向 exe 文件本身，需取父目录
         String appPath = System.getProperty("jpackage.app-path");
         if (appPath != null && !appPath.isBlank()) {
             Path exe = Path.of(appPath);
             Path appDir = Files.isRegularFile(exe) ? exe.getParent() : exe;
             return appDir.resolve("logs");
         }
-        // 开发形态：使用用户主目录
-        return Path.of(System.getProperty("user.home"), ".oracle-mcp-helper", "logs");
+        return Path.of(System.getProperty("user.home"), ".db-mcp-helper", "logs");
     }
 
-    /** 打开日志文件（按日期命名，追加模式） */
     private static java.io.PrintStream openLog(Path logDir) {
         try {
             Files.createDirectories(logDir);
             String date = java.time.LocalDate.now().toString();
             Path logFile = logDir.resolve("setup-" + date + ".log");
-            return new java.io.PrintStream(
-                new java.io.FileOutputStream(logFile.toFile(), true), true, "UTF-8");
+            return new java.io.PrintStream(new java.io.FileOutputStream(logFile.toFile(), true), true, "UTF-8");
         } catch (Exception e) {
-            // 日志文件打开失败，降级到 stderr
             System.err.println("无法打开日志文件: " + e.getMessage());
             return System.err;
         }
     }
 
-    /** 检测指定端口是否已有我们的服务在运行（通过请求 /api/detect 验证） */
     private static boolean isOurServerRunning(int port) {
         try {
             java.net.HttpURLConnection conn = (java.net.HttpURLConnection)
@@ -131,7 +115,6 @@ public final class SetupMain {
             conn.setRequestMethod("GET");
             int code = conn.getResponseCode();
             conn.disconnect();
-            // 200 且返回 JSON 说明是我们的服务
             return code == 200;
         } catch (Exception e) {
             return false;
@@ -164,6 +147,8 @@ public final class SetupMain {
         switch (path) {
             case "/api/detect":
                 return ok(detect());
+            case "/api/adapters":
+                return ok(adapters());
             case "/api/deploy":
                 return ok(deploy(body));
             case "/api/env/config":
@@ -205,6 +190,31 @@ public final class SetupMain {
         }
     }
 
+    // ---------- adapters ----------
+
+    private static JsonObject adapters() {
+        JsonArray arr = new JsonArray();
+        for (DbAdapter a : DbAdapters.all()) {
+            JsonObject o = new JsonObject();
+            o.addProperty("id", a.id());
+            o.addProperty("displayName", a.displayName());
+            o.addProperty("defaultPort", a.defaultPort());
+            o.addProperty("serverPrefix", a.serverPrefix());
+            o.addProperty("skillDir", a.skillDir());
+            o.addProperty("runtimeKind", a.runtimeKind().name());
+            JsonArray all = new JsonArray();
+            a.allTools().forEach(all::add);
+            o.add("allTools", all);
+            JsonArray req = new JsonArray();
+            a.requiredTools().forEach(req::add);
+            o.add("requiredTools", req);
+            arr.add(o);
+        }
+        JsonObject d = new JsonObject();
+        d.add("adapters", arr);
+        return d;
+    }
+
     // ---------- detect ----------
 
     private static JsonObject detect() {
@@ -214,19 +224,19 @@ public final class SetupMain {
         d.addProperty("home", normalizePath(Cfg.home().toString()));
         d.addProperty("root", normalizePath(root.toString()));
         d.addProperty("rootExists", Files.isDirectory(root));
-        d.addProperty("toolkitDeployed", Files.isRegularFile(root.resolve(Cfg.TOOLKIT_FILE_NAME)));
-        d.addProperty("tapDeployed", Files.isRegularFile(root.resolve(Cfg.TAP_FILE_NAME)));
+        d.addProperty("tapDeployed", Files.isRegularFile(root.resolve("tap").resolve(Cfg.TAP_FILE_NAME)));
         d.addProperty("javaCmd", normalizePath(Cfg.javaCmd()));
         d.addProperty("mcpJsonPath", normalizePath(Cfg.mcpJsonPath().toString()));
         d.addProperty("qoderPluginMcpJsonPath", normalizePath(Cfg.qoderPluginMcpJsonPath().toString()));
         JsonArray registered = new JsonArray();
-        McpJson.serverNames(Cfg.mcpJsonPath()).stream().filter(n -> n.startsWith("oracle-")).forEach(registered::add);
+        McpJson.serverNames(Cfg.mcpJsonPath()).stream()
+                .filter(n -> DbAdapters.all().stream().anyMatch(a -> n.startsWith(a.serverPrefix()))).forEach(registered::add);
         d.add("registeredServers", registered);
         JsonArray qoderPluginRegistered = new JsonArray();
-        McpJson.serverNames(Cfg.qoderPluginMcpJsonPath()).stream().filter(n -> n.startsWith("oracle-")).forEach(qoderPluginRegistered::add);
+        McpJson.serverNames(Cfg.qoderPluginMcpJsonPath()).stream()
+                .filter(n -> DbAdapters.all().stream().anyMatch(a -> n.startsWith(a.serverPrefix()))).forEach(qoderPluginRegistered::add);
         d.add("qoderPluginRegisteredServers", qoderPluginRegistered);
         if (st != null) {
-            // 标准化 state 中的路径
             JsonObject stateJson = GSON.toJsonTree(st).getAsJsonObject();
             if (stateJson.has("root")) {
                 stateJson.addProperty("root", normalizePath(stateJson.get("root").getAsString()));
@@ -248,14 +258,16 @@ public final class SetupMain {
     // ---------- deploy ----------
 
     private static JsonObject deploy(JsonObject body) throws IOException {
-        // 安装形态下不再单独询问目录：root 缺省即用安装过程中用户选择的目录（{app}）
+        String dbId = str(body, "dbId");
+        DbAdapter adapter = DbAdapters.require(dbId);
         String reqRoot = str(body, "root");
         Path root = reqRoot != null && !reqRoot.isBlank() ? Path.of(reqRoot.trim()) : Cfg.installDir();
         validateInstallRoot(root);
-        State st = Installer.deploy(root);
+        State st = Installer.deploy(root, dbId, adapter);
         Cfg.writeLastRoot(root);
         JsonObject d = new JsonObject();
         d.addProperty("root", root.toString());
+        d.addProperty("dbId", dbId);
         d.add("state", GSON.toJsonTree(st));
         return d;
     }
@@ -264,6 +276,8 @@ public final class SetupMain {
 
     private static JsonObject envConfig(JsonObject body) throws IOException {
         Path root = requireRoot();
+        String dbId = str(body, "dbId");
+        DbAdapter adapter = DbAdapters.require(dbId);
         String env = str(body, "env");
         if (!Installer.validEnvName(env)) {
             throw new IllegalArgumentException("环境编码不合法：仅小写字母/数字/连字符，字母开头，≤32 位");
@@ -272,9 +286,10 @@ public final class SetupMain {
         String user = str(body, "user");
         String password = str(body, "password");
         String jdbcUrl = str(body, "jdbcUrl");
-        int port = body.has("port") && !body.get("port").getAsString().isBlank() ? Integer.parseInt(body.get("port").getAsString().trim()) : 1521;
+        int port = body.has("port") && !body.get("port").getAsString().isBlank()
+                ? Integer.parseInt(body.get("port").getAsString().trim()) : adapter.defaultPort();
         String service = str(body, "service");
-        // paste 兜底：显式字段为空时从粘贴的配置片段解析补齐
+        String database = str(body, "database");
         String paste = str(body, "paste");
         if (paste != null && !paste.isBlank()) {
             java.util.Map<String, String> p = ConfigParser.extract(paste);
@@ -283,7 +298,11 @@ public final class SetupMain {
                 if (parts != null) {
                     host = parts[0];
                     port = Integer.parseInt(parts[1]);
-                    service = parts[2];
+                    if (adapter.id().equals("oracle")) {
+                        service = parts[2];
+                    } else {
+                        database = parts[2];
+                    }
                 } else {
                     jdbcUrl = p.get("url");
                 }
@@ -295,36 +314,48 @@ public final class SetupMain {
                 password = p.get("password");
             }
         }
-        String url = jdbcUrl != null && !jdbcUrl.isBlank() ? jdbcUrl.trim() : Installer.jdbcUrl(host, port, service);
+        String name = adapter.id().equals("oracle")
+                ? (service != null ? service : "")
+                : (database != null ? database : "");
+        String url = jdbcUrl != null && !jdbcUrl.isBlank() ? jdbcUrl.trim() : adapter.buildJdbcUrl(host, port, name);
         if (user == null || user.isBlank() || password == null || password.isBlank()) {
             throw new IllegalArgumentException("用户名和密码不能为空");
         }
         List<String> tools = strList(body, "tools");
-        if (!tools.contains("read-query") || !tools.contains("db-ping")) {
-            throw new IllegalArgumentException("read-query 与 db-ping 为必选工具");
+        if (!tools.containsAll(adapter.requiredTools())) {
+            throw new IllegalArgumentException("必选工具缺失：" + String.join(",", adapter.requiredTools()));
         }
-        Installer.writeEnvConfig(root, env, url, user.trim(), password);
+        Installer.writeEnvConfig(root, dbId, env, adapter, url, user.trim(), password);
 
         State st = State.load(root);
         if (st == null) {
             throw new IllegalStateException("未检测到部署状态，请先部署运行时");
         }
         State.EnvInfo info = st.envs.computeIfAbsent(env, k -> new State.EnvInfo());
+        info.dbType = adapter.id();
         info.aliases = strList(body, "aliases");
         info.tools = tools;
+        info.host = host;
+        info.port = port;
+        info.database = name;
+        info.user = user.trim();
+        info.password = password;
+        info.url = url;
         st.save(root);
 
         JsonObject d = new JsonObject();
         d.addProperty("env", env);
-        d.addProperty("configPath", Installer.configYaml(root, env).toString());
+        d.addProperty("dbId", dbId);
+        d.addProperty("configPath", Installer.configFile(root, dbId, env, adapter).toString());
         d.addProperty("url", url);
         return d;
     }
 
     // ---------- env parse（粘贴解析） ----------
 
-    /** 从粘贴的配置片段提取 url/username/password，简单形式 URL 进一步拆为 host/port/service。 */
     private static JsonObject envParse(JsonObject body) {
+        String dbId = str(body, "dbId");
+        DbAdapter adapter = dbId != null ? DbAdapters.get(dbId) : null;
         java.util.Map<String, String> p = ConfigParser.extract(str(body, "text"));
         JsonObject d = new JsonObject();
         d.addProperty("foundUrl", p.containsKey("url"));
@@ -336,16 +367,20 @@ public final class SetupMain {
             if (parts != null) {
                 d.addProperty("host", parts[0]);
                 d.addProperty("port", parts[1]);
-                d.addProperty("service", parts[2]);
+                if (adapter != null && adapter.id().equals("oracle")) {
+                    d.addProperty("service", parts[2]);
+                } else {
+                    d.addProperty("database", parts[2]);
+                }
             } else {
-                d.addProperty("jdbcUrl", url); // TNS 等复杂形式整体回填高级选项
+                d.addProperty("jdbcUrl", url);
             }
         }
         if (p.containsKey("username")) {
             d.addProperty("user", p.get("username"));
         }
         if (p.containsKey("password")) {
-            d.addProperty("hasPassword", true); // 密码不回显前端，经 envConfig 的 paste 原样落盘
+            d.addProperty("hasPassword", true);
         }
         d.addProperty("parseable", !p.isEmpty());
         return d;
@@ -353,20 +388,19 @@ public final class SetupMain {
 
     // ---------- env test（异步） ----------
 
-    /** 触发自检：立即返回 running 状态，实际测试在后台线程执行。 */
     private static JsonObject envTest(JsonObject body) {
         Path root = requireRoot();
+        String dbId = str(body, "dbId");
         String env = str(body, "env");
-        if (env == null || env.isBlank()) {
-            return err("env 参数不能为空");
+        if (dbId == null || dbId.isBlank() || env == null || env.isBlank()) {
+            return err("dbId 与 env 参数不能为空");
         }
-        // 标记为运行中
+        DbAdapter adapter = DbAdapters.require(dbId);
+        Map<String, String> envVars = resolveEnvVars(root, dbId, env, adapter);
         TEST_RESULTS.put(env, RUNNING_MARKER);
-        // 后台线程执行自检
         new Thread(() -> {
-            SelfTest.Result r = SelfTest.run(root, env);
+            SelfTest.Result r = SelfTest.run(root, dbId, env, adapter, envVars);
             TEST_RESULTS.put(env, r);
-            // 持久化到 state
             try {
                 State st = State.load(root);
                 if (st != null && st.envs.containsKey(env)) {
@@ -379,7 +413,7 @@ public final class SetupMain {
                 }
             } catch (Exception ignored) {
             }
-        }, "selftest-" + env).start();
+        }, "selftest-" + dbId + "-" + env).start();
         JsonObject d = new JsonObject();
         d.addProperty("ok", false);
         d.addProperty("detail", "自检已启动，请稍后刷新查看结果");
@@ -387,7 +421,15 @@ public final class SetupMain {
         return d;
     }
 
-    /** 轮询自检结果。 */
+    private static Map<String, String> resolveEnvVars(Path root, String dbId, String env, DbAdapter adapter) {
+        State st = State.load(root);
+        if (st != null && st.envs.containsKey(env)) {
+            State.EnvInfo info = st.envs.get(env);
+            return adapter.envVars(info.url, info.user, info.password, info.port, info.database);
+        }
+        return adapter.envVars("", "", "", adapter.defaultPort(), "");
+    }
+
     private static JsonObject envTestPoll(String env) {
         SelfTest.Result r = TEST_RESULTS.get(env);
         JsonObject d = new JsonObject();
@@ -413,18 +455,23 @@ public final class SetupMain {
 
     private static JsonObject envRegister(JsonObject body) throws IOException {
         Path root = requireRoot();
+        String dbId = str(body, "dbId");
         String env = str(body, "env");
+        DbAdapter adapter = DbAdapters.require(dbId);
         State st = State.load(root);
         if (st == null || !st.envs.containsKey(env)) {
             throw new IllegalStateException("环境未配置：" + env);
         }
-        List<String> cmd = McpJson.buildCommand(root, env, st.envs.get(env).tools);
-        String serverName = "oracle-" + env;
-        JsonObject entry = McpJson.register(Cfg.mcpJsonPath(), serverName, cmd);
+        List<String> tools = st.envs.get(env).tools;
+        List<String> cmd = adapter.buildCommand(root, dbId, env, tools);
+        Map<String, String> envVars = resolveEnvVars(root, dbId, env, adapter);
+        String serverName = adapter.serverPrefix() + env;
+        JsonObject entry = McpJson.register(Cfg.mcpJsonPath(), serverName, cmd, envVars);
         st.envs.get(env).registered = true;
         st.save(root);
         JsonObject d = new JsonObject();
         d.addProperty("serverName", serverName);
+        d.addProperty("dbId", dbId);
         d.addProperty("mcpJsonPath", Cfg.mcpJsonPath().toString());
         d.add("entry", entry);
         return d;
@@ -434,15 +481,19 @@ public final class SetupMain {
 
     private static JsonObject envDelete(JsonObject body) throws IOException {
         Path root = requireRoot();
+        String dbId = str(body, "dbId");
         String env = str(body, "env");
-        String serverName = "oracle-" + env;
+        DbAdapter adapter = DbAdapters.require(dbId);
+        String serverName = adapter.serverPrefix() + env;
         boolean removedFromMcp = McpJson.remove(Cfg.mcpJsonPath(), serverName);
-        String trashMsg = Trash.moveToTrash(Installer.envDir(root, env));
+        String trashMsg = Trash.moveToTrash(Installer.envDir(root, dbId, env));
         State st = State.load(root);
         if (st != null) {
             st.envs.remove(env);
             st.save(root);
-            SkillService.syncMappings(st);
+            for (DbAdapter a : DbAdapters.all()) {
+                SkillService.syncMappings(st, a);
+            }
         }
         JsonObject d = new JsonObject();
         d.addProperty("removedFromMcp", removedFromMcp);
@@ -454,6 +505,7 @@ public final class SetupMain {
 
     private static JsonObject envLog(URI uri) throws IOException {
         Path root = requireRoot();
+        String dbId = query(uri, "dbId");
         String env = query(uri, "env");
         int limit = 200;
         try {
@@ -462,39 +514,42 @@ public final class SetupMain {
                 limit = Math.min(2000, Integer.parseInt(l));
             }
         } catch (NumberFormatException ignored) {
-            // 保持默认 limit
         }
         JsonObject d = new JsonObject();
-        d.addProperty("logPath", Installer.callLog(root, env).toString());
+        d.addProperty("logPath", Installer.callLog(root, dbId, env).toString());
         JsonArray arr = new JsonArray();
-        Installer.tailCallLog(root, env, limit).forEach(arr::add);
+        Installer.tailCallLog(root, dbId, env, limit).forEach(arr::add);
         d.add("lines", arr);
         return ok(d);
     }
 
-    // ---------- env guide（多平台接入指南） ----------
+    // ---------- env guide ----------
 
     private static JsonObject envGuide(URI uri) throws IOException {
         Path root = requireRoot();
+        String dbId = query(uri, "dbId");
         String env = query(uri, "env");
+        DbAdapter adapter = DbAdapters.require(dbId);
         State st = State.load(root);
         if (st == null || !st.envs.containsKey(env)) {
             throw new IllegalStateException("环境未配置：" + env);
         }
-        return ok(PlatformGuide.guide(root, env, st.envs.get(env).tools));
+        return ok(PlatformGuide.guide(root, dbId, env, st.envs.get(env).tools, adapter));
     }
 
     // ---------- skill ----------
 
     private static JsonObject skillDeploy(JsonObject body) throws IOException {
         Path root = resolveRoot(null);
+        String dbId = str(body, "dbId");
+        DbAdapter adapter = DbAdapters.require(dbId);
         State st = State.load(root);
         if (st == null) {
             st = new State();
             st.root = root.toString();
         }
         List<String> targets = strList(body, "targets");
-        List<String> deployed = SkillService.deploy(st, targets);
+        List<String> deployed = SkillService.deploy(st, targets, adapter);
         st.save(root);
         JsonObject d = new JsonObject();
         JsonArray arr = new JsonArray();
@@ -509,7 +564,10 @@ public final class SetupMain {
         if (st == null) {
             throw new IllegalStateException("未检测到部署状态");
         }
-        List<String> updated = SkillService.syncMappings(st);
+        List<String> updated = new ArrayList<>();
+        for (DbAdapter a : DbAdapters.all()) {
+            updated.addAll(SkillService.syncMappings(st, a));
+        }
         JsonObject d = new JsonObject();
         JsonArray arr = new JsonArray();
         updated.forEach(arr::add);
@@ -517,11 +575,8 @@ public final class SetupMain {
         return d;
     }
 
-    // ---------- skill targets 管理 ----------
-
-    /** 列出已部署的 skill 位置 */
     private static JsonObject skillListTargets() throws IOException {
-        Path root = requireRoot();
+        Path root = resolveRoot(null);
         State st = State.load(root);
         if (st == null) {
             throw new IllegalStateException("未检测到部署状态");
@@ -533,7 +588,6 @@ public final class SetupMain {
         return d;
     }
 
-    /** 新增 skill 位置 */
     private static JsonObject skillAddTarget(JsonObject body) throws IOException {
         Path root = requireRoot();
         State st = State.load(root);
@@ -545,19 +599,19 @@ public final class SetupMain {
             throw new IllegalArgumentException("target 不能为空");
         }
         target = target.trim();
+        String dbId = str(body, "dbId");
+        DbAdapter adapter = DbAdapters.require(dbId);
         if (!st.skillTargets.contains(target)) {
             st.skillTargets.add(target);
-            st.save(root);
-            // 部署 skill 到新位置
-            SkillService.deploy(st, List.of(target));
         }
+        st.save(root);
+        SkillService.deploy(st, List.of(target), adapter);
         JsonObject d = new JsonObject();
         d.addProperty("target", target);
-        d.addProperty("added", !st.skillTargets.contains(target));
+        d.addProperty("added", true);
         return d;
     }
 
-    /** 删除 skill 位置 */
     private static JsonObject skillRemoveTarget(JsonObject body) throws IOException {
         Path root = requireRoot();
         State st = State.load(root);
@@ -572,10 +626,11 @@ public final class SetupMain {
         boolean removed = st.skillTargets.remove(target);
         if (removed) {
             st.save(root);
-            // 删除 skill 目录
-            Path skillDir = Path.of(target).resolve(SkillService.SKILL_DIR_NAME);
-            if (Files.isDirectory(skillDir)) {
-                Trash.moveToTrash(skillDir);
+            for (DbAdapter a : DbAdapters.all()) {
+                Path skillDir = Path.of(target).resolve(a.skillDir());
+                if (Files.isDirectory(skillDir)) {
+                    Trash.moveToTrash(skillDir);
+                }
             }
         }
         JsonObject d = new JsonObject();
@@ -586,24 +641,27 @@ public final class SetupMain {
 
     // ---------- reset / uninstall ----------
 
-    /**
-     * 一键清空：移除 mcp.json 中全部 oracle-* 条目、已部署 Skill 副本、安装根目录（含 state 与环境配置），
-     * 全部走系统回收站；安装程序本身保留。清空后等同从未操作过的初始状态。
-     */
     private static JsonObject reset() throws IOException {
-        // state 必须在删除根目录之前读取（skill 部署位置清单在其中）
         Path root = resolveRoot(null);
         State st = State.load(root);
 
-        int mcpRemoved = McpJson.removeByPrefix(Cfg.mcpJsonPath(), "oracle-");
-        int qoderPluginMcpRemoved = McpJson.removeByPrefix(Cfg.qoderPluginMcpJsonPath(), "oracle-");
+        int mcpRemoved = 0;
+        for (DbAdapter a : DbAdapters.all()) {
+            mcpRemoved += McpJson.removeByPrefix(Cfg.mcpJsonPath(), a.serverPrefix());
+        }
+        int qoderPluginMcpRemoved = 0;
+        for (DbAdapter a : DbAdapters.all()) {
+            qoderPluginMcpRemoved += McpJson.removeByPrefix(Cfg.qoderPluginMcpJsonPath(), a.serverPrefix());
+        }
 
         JsonArray skillMsgs = new JsonArray();
         if (st != null) {
             for (String t : st.skillTargets) {
-                Path dir = Path.of(t).resolve(SkillService.SKILL_DIR_NAME);
-                if (Files.isDirectory(dir)) {
-                    skillMsgs.add(dir + " → " + Trash.moveToTrash(dir));
+                for (DbAdapter a : DbAdapters.all()) {
+                    Path dir = Path.of(t).resolve(a.skillDir());
+                    if (Files.isDirectory(dir)) {
+                        skillMsgs.add(dir + " → " + Trash.moveToTrash(dir));
+                    }
                 }
             }
         }
@@ -618,12 +676,6 @@ public final class SetupMain {
         return d;
     }
 
-    /**
-     * 一键卸载：先执行一键清空（数据 + mcp.json 条目），再移除安装程序自身。
-     * 正式安装形态（Inno Setup）从安装目录的 install-info.json 读取 uninstallString，
-     * 调起 Inno 卸载器（unins000.exe）以正规方式移除程序目录与卸载注册项；
-     * 开发形态（直接 java -jar）无 Inno 卸载信息，仅清空数据并提示手动删除 JAR。
-     */
     private static JsonObject uninstall() throws IOException {
         JsonObject d = reset();
 
@@ -638,7 +690,6 @@ public final class SetupMain {
         } else {
             d.addProperty("selfRemoved", "开发模式运行（java -jar），数据已全部清空；安装程序 JAR 请在向导退出后手动删除");
         }
-        // 延迟停机，确保本次响应先送达
         Thread stopper = new Thread(() -> {
             try {
                 Thread.sleep(800);
@@ -655,11 +706,10 @@ public final class SetupMain {
         return d;
     }
 
-    /** 尽力移除桌面上的安装器快捷方式（Windows .lnk）；不存在返回 false。 */
     private static boolean removeDesktopShortcut() {
         try {
             Path desktop = Path.of(System.getProperty("user.home"), "Desktop");
-            for (String name : new String[]{"Oracle MCP Setup.lnk", "Oracle MCP 安装向导.lnk"}) {
+            for (String name : new String[]{"DB MCP Helper.lnk", "DB MCP Helper 安装向导.lnk"}) {
                 Path lnk = desktop.resolve(name);
                 if (Files.isRegularFile(lnk)) {
                     Trash.moveToTrash(lnk);
@@ -667,22 +717,16 @@ public final class SetupMain {
                 }
             }
         } catch (Exception ignored) {
-            // 快捷方式清理失败不影响卸载主流程
         }
         return false;
     }
 
-    /**
-     * 调起 Inno 卸载器：用 start /wait 以独立进程运行，使其脱离本向导进程树，
-     * 在向导退出后仍可继续删除程序目录。uninstallCmd 通常为 unins000.exe 路径。
-     */
     private static void scheduleInnoUninstall(String uninstallCmd, Path appDir) {
         try {
             String esc = uninstallCmd.replace("\"", "\\\"");
             new ProcessBuilder("cmd.exe", "/c", "start", "", "/wait", "cmd.exe", "/c",
                     "\"" + esc + "\" /SILENT /SUPPRESSMSGBOXES").start();
         } catch (Exception ignored) {
-            // 调起失败不影响已清空的数据；用户可后续从控制面板卸载
         }
     }
 
@@ -692,17 +736,14 @@ public final class SetupMain {
         if (requested != null && !requested.isBlank()) {
             return Path.of(requested.trim());
         }
-        // 优先使用上次记录的位置，使安装器自身能记住用户修改过的安装目录
         Path lastRoot = Cfg.readLastRoot();
         if (lastRoot != null) {
             return lastRoot;
         }
-        // 兼容旧逻辑：若默认目录下已有 state，直接沿用
         State st = State.load(Cfg.defaultRoot());
         if (st != null && st.root != null && !st.root.isBlank()) {
             return Path.of(st.root);
         }
-        // 安装形态：运行时直接释放到安装过程中用户选择的目录（{app}），不再单独询问
         return Cfg.installDir();
     }
 
@@ -714,11 +755,6 @@ public final class SetupMain {
         return root;
     }
 
-    /**
-     * 校验安装根目录：绝对路径、可写。
-     * 注意：运行时默认就释放到安装目录（{app}）内，因此不再禁止"位于安装程序自身目录内"——
-     * 这是预期行为（与向导同目录，卸载时一并清理）。仅保留绝对路径与可写性校验。
-     */
     private static void validateInstallRoot(Path root) {
         if (!root.isAbsolute()) {
             throw new IllegalArgumentException("安装根目录必须是绝对路径：" + root);
@@ -735,26 +771,6 @@ public final class SetupMain {
                     : "";
             throw new IllegalArgumentException("安装根目录不可写或无法创建：" + normalized + "（" + e.getMessage() + "）" + hint);
         }
-    }
-
-    /** 定位安装程序自身所在目录；jpackage 形态用系统属性，开发形态尝试定位运行中的 JAR 目录。 */
-    private static Path resolveAppDir() {
-        String jp = System.getProperty("jpackage.app-path");
-        if (jp != null && !jp.isBlank()) {
-            return Path.of(jp).getParent();
-        }
-        try {
-            java.security.CodeSource cs = SetupMain.class.getProtectionDomain().getCodeSource();
-            if (cs != null && cs.getLocation() != null) {
-                Path jar = Path.of(cs.getLocation().toURI());
-                if (Files.isRegularFile(jar)) {
-                    return jar.getParent();
-                }
-            }
-        } catch (Exception ignored) {
-            // 开发模式下可能拿不到，忽略
-        }
-        return null;
     }
 
     private static String str(JsonObject o, String k) {
@@ -834,13 +850,13 @@ public final class SetupMain {
     }
 
     private static void openBrowser(String url) {
+        if (NO_BROWSER) return;
         try {
             if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
                 Desktop.getDesktop().browse(URI.create(url));
                 return;
             }
         } catch (Exception ignored) {
-            // 降级到命令行方式
         }
         try {
             String os = System.getProperty("os.name", "").toLowerCase();
@@ -856,7 +872,6 @@ public final class SetupMain {
         }
     }
 
-    /** 统一路径分隔符为正斜杠，便于前端一致显示。 */
     private static String normalizePath(String path) {
         return path == null ? null : path.replace("\\", "/");
     }

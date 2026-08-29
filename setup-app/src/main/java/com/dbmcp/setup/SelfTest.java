@@ -1,5 +1,6 @@
-package com.oraclemcp.setup;
+package com.dbmcp.setup;
 
+import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import java.io.BufferedReader;
@@ -14,17 +15,17 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.util.Map;
+import java.util.concurrent.LinkedBlockingQueue;
 
 /**
- * 连通自检模块：走与生产完全一致的链路（tap 包 toolkit），
- * 完成 MCP stdio 握手并调用 db-ping，返回数据库版本与延迟。
+ * 连通自检模块：走与生产完全一致的链路（tap 包 toolkit/server），
+ * 完成 MCP stdio 握手并调用各库适配器的 ping 工具，返回数据库版本与延迟。
  */
 public final class SelfTest {
 
     private static final int TIMEOUT_SECONDS = 90;
-    private static final Pattern FIELD = Pattern.compile("(\\w+)\\s*:\\s*(.+)");
+    private static final Gson GSON = new Gson();
 
     /** 自检结果。 */
     public static final class Result {
@@ -37,49 +38,75 @@ public final class SelfTest {
     private SelfTest() {
     }
 
-    public static Result run(Path root, String env) {
+    public static Result run(Path baseDir, String dbId, String env, DbAdapter adapter, Map<String, String> envVars) {
         Result r = new Result();
-        // 打开自检专用日志
-        PrintStream log = openSelfTestLog(root);
-        log.println("=== 自检开始 === " + Instant.now());
+        PrintStream log = openSelfTestLog(baseDir);
+        log.println("=== 自检开始 === " + Instant.now() + " db=" + dbId + " env=" + env);
 
         try {
-            Path toolkit = root.resolve(Cfg.TOOLKIT_FILE_NAME);
-            Path tap = root.resolve(Cfg.TAP_FILE_NAME);
-            Path cfg = Installer.configYaml(root, env);
+            Path toolkit = Installer.toolkitPath(baseDir, dbId, adapter);
+            Path tap = baseDir.resolve("tap").resolve(Cfg.TAP_FILE_NAME);
+            Path cfg = Installer.configFile(baseDir, dbId, env, adapter);
             log.println("toolkit: " + toolkit + " exists=" + Files.isRegularFile(toolkit));
             log.println("tap:     " + tap + " exists=" + Files.isRegularFile(tap));
             log.println("config:  " + cfg + " exists=" + Files.isRegularFile(cfg));
 
-            if (!Files.isRegularFile(toolkit) || !Files.isRegularFile(tap) || !Files.isRegularFile(cfg)) {
+            if (adapter.runtimeKind() == DbAdapter.RuntimeKind.JAVA_JAR
+                    && (!Files.isRegularFile(toolkit) || !Files.isRegularFile(tap) || !Files.isRegularFile(cfg))) {
                 r.ok = false;
                 r.detail = "运行时或环境配置缺失，请先部署运行时并保存环境配置";
                 log.println("FAIL: " + r.detail);
                 return r;
             }
+            if (adapter.runtimeKind() == DbAdapter.RuntimeKind.NODE
+                    && (!Files.isRegularFile(tap) || !Files.isRegularFile(toolkit.resolve("build").resolve("index.js")))) {
+                r.ok = false;
+                r.detail = "运行时或环境配置缺失（node 链路需 tap 与 mysql-mcp-server/build/index.js），请先部署";
+                log.println("FAIL: " + r.detail);
+                return r;
+            }
 
-            String java = Installer.resolveJava(root);
+            String java = Installer.resolveJava(baseDir);
             log.println("java:    " + java + " exists=" + Files.isRegularFile(Path.of(java)));
 
-            // 策略：设置工作目录为安装目录，所有路径参数改用相对路径，彻底避免空格问题
-            String javaRel = Path.of(java).getFileName().toString(); // java.exe
-            String tapRel = root.relativize(tap).toString();
-            String toolkitRel = root.relativize(toolkit).toString();
-            String cfgRel = root.relativize(cfg).toString();
-            String logRel = root.relativize(Installer.callLog(root, env)).toString();
+            String javaRel = Path.of(java).getFileName().toString();
+            String tapRel = baseDir.relativize(tap).toString();
+            String cfgRel = baseDir.relativize(cfg).toString();
+            String logRel = baseDir.relativize(Installer.callLog(baseDir, dbId, env)).toString();
 
-            List<String> cmd = List.of(
-                    javaRel, "-jar", tapRel, "--log", logRel, "--",
-                    javaRel, "-DconfigFile=" + cfgRel, "-Dtools=db-ping", "-jar", toolkitRel);
+            List<String> inner = adapter.buildCommand(baseDir, dbId, env, adapter.requiredTools());
+            // inner = [java, -jar, tap, --log, logRel, --, <server...>]
+            // 重写日志相对路径并复用 adapter 的 server 段（去掉外层 java/tap/--log/--）
+            List<String> server = inner.subList(6, inner.size());
+            boolean win = System.getProperty("os.name", "").toLowerCase().contains("win");
+            boolean node = adapter.runtimeKind() == DbAdapter.RuntimeKind.NODE;
+            List<String> cmd = new ArrayList<>();
+            cmd.add(javaRel);
+            cmd.add("-jar");
+            cmd.add(tapRel);
+            cmd.add("--log");
+            cmd.add(logRel);
+            cmd.add("--");
+            if (node) {
+                // server 段首项是 node 可执行文件（已含相对/绝对路径）；保留原样
+                cmd.addAll(relativize(baseDir, server));
+            } else {
+                cmd.add(javaRel);
+                cmd.addAll(relativize(baseDir, server.subList(1, server.size())));
+            }
+
             log.println("CMD (relative): " + String.join(" ", cmd));
-            log.println("workDir: " + root);
+            log.println("workDir: " + baseDir);
 
             Process p = null;
             try {
-                final Process proc = new ProcessBuilder(cmd)
-                        .directory(root.toFile())
-                        .redirectErrorStream(false)
-                        .start();
+                final ProcessBuilder pb = new ProcessBuilder(cmd)
+                        .directory(baseDir.toFile())
+                        .redirectErrorStream(false);
+                if (envVars != null && !envVars.isEmpty()) {
+                    pb.environment().putAll(envVars);
+                }
+                final Process proc = pb.start();
                 p = proc;
                 log.println("子进程已启动, PID=" + proc.pid());
 
@@ -90,7 +117,7 @@ public final class SelfTest {
 
                 BufferedWriter w = new BufferedWriter(new OutputStreamWriter(proc.getOutputStream(), StandardCharsets.UTF_8));
                 BufferedReader rd = new BufferedReader(new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8));
-                java.util.concurrent.LinkedBlockingQueue<String> lines = new java.util.concurrent.LinkedBlockingQueue<>();
+                LinkedBlockingQueue<String> lines = new LinkedBlockingQueue<>();
                 Thread reader = new Thread(() -> {
                     try {
                         String l;
@@ -104,8 +131,7 @@ public final class SelfTest {
                 reader.setDaemon(true);
                 reader.start();
 
-                // 1) initialize
-                String initMsg = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"oracle-mcp-setup\",\"version\":\"0.1\"}}}";
+                String initMsg = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"db-mcp-setup\",\"version\":\"0.1\"}}}";
                 log.println(">> initialize");
                 w.write(initMsg);
                 w.write("\n");
@@ -115,31 +141,31 @@ public final class SelfTest {
                     r.detail = "MCP 握手超时（initialize 无响应）";
                     r.stderrTail = tail(errBuf);
                     log.println("FAIL: " + r.detail);
-                    log.println("stderr: " + r.stderrTail);
                     return r;
                 }
                 log.println("<< initialize OK: " + initResp.substring(0, Math.min(200, initResp.length())));
 
-                // 2) initialized 通知
                 w.write("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
                 w.write("\n");
                 w.flush();
 
-                // 3) db-ping
-                log.println(">> db-ping");
-                w.write("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"db-ping\",\"arguments\":{}}}");
+                String pingTool = adapter.pingTool();
+                JsonObject pingArgs = adapter.pingArguments();
+                String pingMsg = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\""
+                        + pingTool + "\",\"arguments\":" + GSON.toJson(pingArgs) + "}}";
+                log.println(">> " + pingTool);
+                w.write(pingMsg);
                 w.write("\n");
                 w.flush();
                 String pingResp = awaitId(lines, "2");
                 if (pingResp == null) {
-                    r.detail = "db-ping 超时（数据库连接可能缓慢或不可达）";
+                    r.detail = pingTool + " 超时（数据库连接可能缓慢或不可达）";
                     r.stderrTail = tail(errBuf);
                     log.println("FAIL: " + r.detail);
-                    log.println("stderr: " + r.stderrTail);
                     return r;
                 }
-                log.println("<< db-ping: " + pingResp.substring(0, Math.min(500, pingResp.length())));
-                parsePing(pingResp, r);
+                log.println("<< " + pingTool + ": " + pingResp.substring(0, Math.min(500, pingResp.length())));
+                adapter.parsePing(pingResp, r);
                 r.stderrTail = tail(errBuf);
                 log.println((r.ok ? "PASS" : "FAIL") + ": " + r.detail);
                 return r;
@@ -162,10 +188,24 @@ public final class SelfTest {
         }
     }
 
+    /** 把命令段中的绝对路径改为相对 baseDir 的路径（tap 已用工作目录相对路径规避空格问题）。 */
+    private static List<String> relativize(Path baseDir, List<String> args) {
+        List<String> out = new ArrayList<>();
+        for (String a : args) {
+            Path p = Path.of(a);
+            if (p.isAbsolute() && a.startsWith(baseDir.toString())) {
+                out.add(baseDir.relativize(p).toString());
+            } else {
+                out.add(a);
+            }
+        }
+        return out;
+    }
+
     /** 自检日志写入安装目录 logs/selftest-YYYY-MM-DD.log */
-    private static PrintStream openSelfTestLog(Path root) {
+    private static PrintStream openSelfTestLog(Path baseDir) {
         try {
-            Path logDir = root.resolve("logs");
+            Path logDir = baseDir.resolve("logs");
             Files.createDirectories(logDir);
             String date = java.time.LocalDate.now().toString();
             Path logFile = logDir.resolve("selftest-" + date + ".log");
@@ -177,7 +217,7 @@ public final class SelfTest {
     }
 
     /** 从读线程的行队列中等待包含指定 id 的响应行，超时返回 null。 */
-    private static String awaitId(java.util.concurrent.LinkedBlockingQueue<String> lines, String id) {
+    private static String awaitId(LinkedBlockingQueue<String> lines, String id) {
         String marker = "\"id\":" + id;
         String markerSpaced = "\"id\": " + id;
         long deadline = System.currentTimeMillis() + TIMEOUT_SECONDS * 1000L;
@@ -198,45 +238,6 @@ public final class SelfTest {
             }
         }
         return null;
-    }
-
-    private static void parsePing(String resp, Result r) {
-        try {
-            JsonObject root = JsonParser.parseString(resp).getAsJsonObject();
-            if (root.has("error")) {
-                r.ok = false;
-                r.detail = "db-ping 返回错误：" + root.get("error");
-                return;
-            }
-            JsonObject result = root.getAsJsonObject("result");
-            boolean isError = result.has("isError") && result.get("isError").getAsBoolean();
-            String text = "";
-            if (result.has("content") && result.getAsJsonArray("content").size() > 0) {
-                text = result.getAsJsonArray("content").get(0).getAsJsonObject().get("text").getAsString();
-            }
-            if (isError) {
-                r.ok = false;
-                r.detail = text.isEmpty() ? "db-ping 失败" : text;
-                return;
-            }
-            String trimmed = text.trim();
-            r.ok = trimmed.startsWith("OK");
-            r.detail = trimmed.lines().findFirst().orElse("");
-            // 解析 "key: value" 行
-            text.lines().forEach(line -> {
-                Matcher m = FIELD.matcher(line.trim());
-                if (m.matches()) {
-                    String k = m.group(1).trim();
-                    String v = m.group(2).trim();
-                    if (!k.isEmpty() && !v.isEmpty()) {
-                        r.fields.addProperty(k, v);
-                    }
-                }
-            });
-        } catch (Exception e) {
-            r.ok = false;
-            r.detail = "无法解析 db-ping 响应：" + e.getMessage();
-        }
     }
 
     private static void readAll(java.io.InputStream in, StringBuilder sb) {

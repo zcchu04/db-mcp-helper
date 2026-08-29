@@ -1,4 +1,4 @@
-package com.oraclemcp.setup;
+package com.dbmcp.setup;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -6,19 +6,28 @@ import java.nio.file.Path;
 /**
  * 全局配置解析：默认路径 + 系统属性覆盖。
  *
+ * <p>目录模型（baseDir = 安装目录，安装形态即 {app}）：
+ * <pre>
+ * baseDir/
+ * ├── runtime/           共享 jlink JRE（驱动 mcp-tap 与 Oracle toolkit）
+ * ├── tap/mcp-tap.jar    共享监听代理
+ * ├── state.json         全局状态（跨所有数据库类型）
+ * └── &lt;dbId&gt;/           每数据库类型一个目录（oracle / mysql）
+ *     ├── toolkit/&lt;file&gt;
+ *     ├── runtime/       （按需）该库服务端运行时（如 mysql 的 node）
+ *     └── instance/&lt;env&gt;/config.*
+ * </pre>
+ *
  * <p>覆盖项（开发/测试用）：
- * <ul>
- *   <li>{@code -Dsetup.root} 安装根目录，默认 {@code ~/.agent/mcp/oracle}</li>
- *   <li>{@code -Dsetup.mcpJson} QoderWork mcp.json 路径，默认 {@code ~/.qoderwork/mcp.json}</li>
- *   <li>{@code -Dsetup.toolkitJar} toolkit JAR 来源（文件路径），缺省读打包资源</li>
- *   <li>{@code -Dsetup.tapJar} mcp-tap JAR 来源（文件路径），缺省读打包资源</li>
- *   <li>{@code -Dsetup.javaCmd} 注册到 mcp.json 的 java 可执行文件，默认当前 JVM</li>
- *   <li>{@code -Dsetup.port} 向导端口，默认 8765</li>
- * </ul>
+ * <li>{@code -Dsetup.root} 安装根目录（baseDir），默认 {@code ~/.agent/mcp}</li>
+ * <li>{@code -Dsetup.mcpJson} QoderWork mcp.json 路径，默认 {@code ~/.qoderwork/mcp.json}</li>
+ * <li>{@code -Dsetup.toolkitJar} 某数据库 toolkit 来源（文件路径），缺省读打包资源</li>
+ * <li>{@code -Dsetup.tapJar} mcp-tap JAR 来源（文件路径），缺省读打包资源</li>
+ * <li>{@code -Dsetup.javaCmd} 注册到 mcp.json 的 java 可执行文件，默认当前 JVM</li>
+ * <li>{@code -Dsetup.port} 向导端口，默认 8765</li>
  */
 public final class Cfg {
 
-    public static final String TOOLKIT_FILE_NAME = "oracle-db-mcp-toolkit-1.0.0.jar";
     public static final String TAP_FILE_NAME = "mcp-tap.jar";
     public static final String STATE_FILE_NAME = "state.json";
 
@@ -29,10 +38,10 @@ public final class Cfg {
         return Path.of(System.getProperty("user.home"));
     }
 
-    /** 安装根目录（可在向导首步修改，修改后持久化到 state）。 */
+    /** 安装根目录（baseDir）。可在向导首步修改，修改后持久化到 state。 */
     public static Path defaultRoot() {
         String v = System.getProperty("setup.root");
-        return v != null && !v.isBlank() ? Path.of(v) : home().resolve(".agent").resolve("mcp").resolve("oracle");
+        return v != null && !v.isBlank() ? Path.of(v) : home().resolve(".agent").resolve("mcp");
     }
 
     /** 记录用户最后选择的安装根目录的标记文件（位于默认根目录下，使安装器自身能记住自定义位置）。 */
@@ -73,10 +82,6 @@ public final class Cfg {
     public static Path qoderPluginMcpJsonPath() {
         String v = System.getProperty("setup.qoderPluginMcpJson");
         return v != null && !v.isBlank() ? Path.of(v) : home().resolve(".qoder").resolve("shared_client").resolve("mcp.json");
-    }
-
-    public static String toolkitJarOverride() {
-        return System.getProperty("setup.toolkitJar");
     }
 
     public static String tapJarOverride() {
@@ -157,10 +162,10 @@ public final class Cfg {
     }
 
     /**
-     * 运行时默认部署根目录。
+     * 运行时默认部署根目录（baseDir）。
      * 安装形态（Inno/jpackage 安装）：直接用安装过程中用户选择的目录（{app}），
      * 不再单独询问"安装根目录"——运行时与向导程序同目录，卸载时一并清理。
-     * 开发形态（java -jar）：回退到 ~/.agent/mcp/oracle 保持兼容。
+     * 开发形态（java -jar）：回退到 ~/.agent/mcp 保持兼容。
      */
     public static Path installDir() {
         Path app = resolveAppDir();

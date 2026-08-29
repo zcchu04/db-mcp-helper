@@ -3,9 +3,9 @@
   <modelVersion>4.0.0</modelVersion>
 
   <parent>
-    <groupId>com.oraclemcp</groupId>
-    <artifactId>oracle-mcp-install-tools</artifactId>
-    <version>0.1.0</version>
+    <groupId>com.dbmcp</groupId>
+    <artifactId>db-mcp-install-tools</artifactId>
+    <version>0.2.0</version>
   </parent>
 
   <artifactId>mcp-tap</artifactId>
@@ -23,7 +23,7 @@
         <configuration>
           <archive>
             <manifest>
-              <mainClass>com.oraclemcp.tap.TapMain</mainClass>
+              <mainClass>com.dbmcp.tap.TapMain</mainClass>
             </manifest>
           </archive>
         </configuration>
