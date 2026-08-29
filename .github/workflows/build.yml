@@ -97,10 +97,18 @@ jobs:
           FULL="java.base,java.logging,java.xml,java.desktop,java.instrument,java.management,java.naming,java.net.http,java.rmi,java.sql,jdk.net,jdk.security.jgss,jdk.httpserver"
           ALL=$(printf "%s,%s" "$FULL" "$MODS" | tr ',' '\n' | sort -u | tr '\n' ',' | sed 's/,$//')
           echo "Modules: $ALL"
-          rm -rf dist/runtime
+          rm -rf dist/runtime dist/runtime.zip
           jlink --add-modules "$ALL" --output dist/runtime \
             --strip-debug --no-header-files --no-man-pages --compress 2
           du -sh dist/runtime
+          # stage-resources.sh 要求 dist/runtime.zip（内嵌到 fat jar 里给 Installer.deployRuntime 释放用），
+          # dist/runtime 目录本身也保留，稍后 Tauri 打包会直接把它 stage 到 shell/bundle/runtime 作运行时兜底。
+          (cd dist && if [ "${{ runner.os }}" = "Windows" ]; then
+             powershell -Command "Compress-Archive -Path runtime -DestinationPath runtime.zip -Force"
+           else
+             zip -qr runtime.zip runtime
+           fi)
+          ls -lh dist/
 
       # ---- 资源内嵌 + 构建 setup-app fat jar ----
       - name: Stage resources
