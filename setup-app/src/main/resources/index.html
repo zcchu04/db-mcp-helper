@@ -139,7 +139,7 @@ function state(){ return DET && DET.state; }
 
 // ---------- 入口 ----------
 async function boot(){
-  try { DET = await api("/api/detect"); ADAPTERS = await api("/api/adapters"); }
+  try { DET = await api("/api/detect"); const r = await api("/api/adapters"); ADAPTERS = (r && r.adapters) || []; }
   catch(e){ $("#app").innerHTML = "<div class='card'><h2>检测失败</h2><p>"+esc(e.message)+"</p></div>"; return; }
   if(!ADAPTERS || !ADAPTERS.length){ $("#app").innerHTML = "<div class='card'><h2>无可用数据库适配器</h2><p>未注册任何数据库类型</p></div>"; return; }
   CUR_DB = ADAPTERS[0].id;
@@ -156,7 +156,7 @@ function populateDbSelect(){
   sel.onchange = () => { CUR_DB = sel.value; if(CUR_ROUTE) navigateTo(CUR_ROUTE); else render(); };
 }
 function ADAPTER(){ return ADAPTERS.find(a=>a.id===CUR_DB) || ADAPTERS[0]; }
-function skillDirName(){ return ADAPTER().skillDir(); }
+function skillDirName(){ return ADAPTER().skillDir; }
 function dbEnvs(){
   const a = ADAPTER(); const st = state()||{envs:{}}; const out = {};
   for(const [k,v] of Object.entries(st.envs||{})){ if((v.dbType||"")===a.id) out[k]=v; }
@@ -421,7 +421,7 @@ WIZ[4] = () => {
   const a = ADAPTER();
   return `<div class="card">
   <h2>3. 注册到 QoderWork 并启用</h2>
-  <p class="desc">将实例 <b>${esc(CUR_ENV)}</b> 以连接器名 <b>${esc(a.serverPrefix()+CUR_ENV)}</b> 合并写入 ${esc(DET.mcpJsonPath)}（写前自动备份）。注册链路为 tap 监听代理包裹 Toolkit，与自检链路一致。</p>
+  <p class="desc">将实例 <b>${esc(CUR_ENV)}</b> 以连接器名 <b>${esc(a.serverPrefix+CUR_ENV)}</b> 合并写入 ${esc(DET.mcpJsonPath)}（写前自动备份）。注册链路为 tap 监听代理包裹 Toolkit，与自检链路一致。</p>
   <button id="w4-btn">注册并启用</button> <button class="ghost" id="w4-back">返回管理台</button>
   <div class="result" id="w4-r"></div>
 </div>`;
@@ -433,7 +433,7 @@ WIZ_BIND[4] = () => { $("#w4-btn").onclick = async () => {
     const r = await api("/api/env/register", {dbId: CUR_DB, env: CUR_ENV});
     DET = await api("/api/detect");
     setResult("#w4-r", true, "已写入 " + esc(r.serverName) + " 到 " + esc(r.mcpJsonPath)
-      + "<br><b>请重启 QoderWork 使连接器生效</b>（或在连接器设置页对 " + esc(a.serverPrefix()+CUR_ENV) + " 执行关闭再开启）"
+      + "<br><b>请重启 QoderWork 使连接器生效</b>（或在连接器设置页对 " + esc(a.serverPrefix+CUR_ENV) + " 执行关闭再开启）"
       + "<pre>" + esc(JSON.stringify(r.entry, null, 2)) + "</pre>");
     setTimeout(()=>renderWizard(5), 1200);
   } catch(e){ setResult("#w4-r", false, esc(e.message)); b.disabled=false; b.textContent="注册并启用"; }
@@ -451,7 +451,7 @@ WIZ[5] = () => {
     ["Cursor", h+"/.cursor/skills", false]
   ];
   return `<div class="card">
-  <h2>4. 部署 Skill（${esc(a.skillDir())}）</h2>
+  <h2>4. 部署 Skill（${esc(a.skillDir)}）</h2>
   <p class="desc">写入静态正文 SKILL.md + 按当前实例清单生成 environments.md 映射表。多选即部署多份副本；后续增删实例会自动同步全部副本。</p>
   ${tg.map((t,i)=>`<label class="chk"><input type="checkbox" class="w5-t" data-v="${esc(t[1])}" ${t[2]?"checked":""}> ${esc(t[0])}<span class="hint" style="margin:0 0 0 6px">${esc(t[1])}</span></label>`).join("")}
   <label>自定义目录（可选）</label>
@@ -491,7 +491,7 @@ async function renderConsole(){
   const isWrite = t => /(write|insert|update|delete)/i.test(t);
   const envs = dbEnvs();
   const rows = Object.entries(envs).map(([code,info])=>{
-    const reg = (DET.registeredServers||[]).includes(a.serverPrefix()+code);
+    const reg = (DET.registeredServers||[]).includes(a.serverPrefix+code);
     const lt = info.lastTest;
     const hasWrite = (info.tools||[]).some(isWrite);
     return `<tr>
@@ -520,7 +520,7 @@ async function renderConsole(){
   </div>
   <div class="card">
     <h2>Skill 部署位置</h2>
-    <p class="desc">管理 ${esc(a.skillDir())} skill 的部署位置。每个位置都会部署一份 skill 副本，增删实例后会自动同步所有副本的 environments.md 映射表。</p>
+    <p class="desc">管理 ${esc(a.skillDir)} skill 的部署位置。每个位置都会部署一份 skill 副本，增删实例后会自动同步所有副本的 environments.md 映射表。</p>
     <div id="skill-targets-list"></div>
     <div style="margin-top:16px; padding:12px; background:#f8f9fa; border-radius:6px">
       <div style="font-weight:600; margin-bottom:8px">新增部署位置</div>
@@ -592,7 +592,7 @@ async function renderConsole(){
       } else if(act==="guide"){
         renderGuide(env);
       } else if(act==="del"){
-        if(!confirm("删除实例 "+env+"？\n将移除 mcp.json 中的 "+a.serverPrefix()+env+" 条目，实例配置目录移入回收站，并同步更新 Skill 映射。")) return;
+        if(!confirm("删除实例 "+env+"？\n将移除 mcp.json 中的 "+a.serverPrefix+env+" 条目，实例配置目录移入回收站，并同步更新 Skill 映射。")) return;
         const r = await api("/api/env/delete",{dbId: CUR_DB, env});
         toast("已删除 "+env+"（"+r.trash+"）");
         renderConsole();
@@ -847,7 +847,7 @@ async function renderSkillPage(){
   $("#app").innerHTML = `
   <div class="card">
     <h2>Skill 部署位置</h2>
-    <p class="desc">管理 ${esc(ADAPTER().skillDir())} skill 的部署位置。每个位置都会部署一份 skill 副本，增删实例后会自动同步所有副本的 environments.md 映射表。</p>
+    <p class="desc">管理 ${esc(ADAPTER().skillDir)} skill 的部署位置。每个位置都会部署一份 skill 副本，增删实例后会自动同步所有副本的 environments.md 映射表。</p>
     <div id="skill-targets-list"></div>
     <div style="margin-top:16px; padding:12px; background:#f8f9fa; border-radius:6px">
       <div style="font-weight:600; margin-bottom:8px">新增部署位置</div>
@@ -917,8 +917,8 @@ function renderSkillGuide(){
   const writeTools = a.allTools.filter(isWrite);
   $("#app").innerHTML = `
   <div class="card">
-    <h2>📖 Skill 使用说明 — ${esc(a.skillDir())}</h2>
-    <p class="desc">${esc(a.skillDir())} 是一个 ${esc(a.displayName)} 数据库安全操作规范 Skill，通过 ${esc(a.serverPrefix())}* MCP 连接器执行 SQL 查询、表结构探查、数据操作与分析。</p>
+    <h2>📖 Skill 使用说明 — ${esc(a.skillDir)}</h2>
+    <p class="desc">${esc(a.skillDir)} 是一个 ${esc(a.displayName)} 数据库安全操作规范 Skill，通过 ${esc(a.serverPrefix)}* MCP 连接器执行 SQL 查询、表结构探查、数据操作与分析。</p>
     
     <h3 style="margin-top:20px; font-size:14px; color:var(--pri)">🎯 触发场景</h3>
     <p style="margin:10px 0; line-height:1.8">当用户提到以下关键词时，Skill 会自动激活：</p>
@@ -933,7 +933,7 @@ function renderSkillGuide(){
     <div style="margin:15px 0">
       <div style="padding:12px; background:#f0f9ff; border-radius:6px; margin-bottom:10px">
         <b> 实例识别</b><br>
-        <span style="font-size:13px; color:var(--tx2)">自动识别用户口语中的实例名（如"生产库"、"UAT"），映射到对应的 ${esc(a.serverPrefix())}* 连接器。歧义时主动反问确认。</span>
+        <span style="font-size:13px; color:var(--tx2)">自动识别用户口语中的实例名（如"生产库"、"UAT"），映射到对应的 ${esc(a.serverPrefix)}* 连接器。歧义时主动反问确认。</span>
       </div>
       <div style="padding:12px; background:#f0fdf4; border-radius:6px; margin-bottom:10px">
         <b>📊 数据查询</b><br>

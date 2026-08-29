@@ -63,9 +63,26 @@ fn log_line(msg: &str) {
 }
 
 // ─── Java 解析 ───────────────────────────────────────────────────────────
+/// 构造一个静默的 java 探针 Command：Windows 下加 CREATE_NO_WINDOW，避免
+/// java.exe（console 子系统）在 .output() 时仍然闪一个新控制台窗口。
+/// Rust 的 .output() 只重定向 stdio 到匿名管道，不设 DETACHED_PROCESS/CREATE_NO_WINDOW，
+/// 所以只要 spawn console 子系统 exe 就会闪黑框。所有 java 探针都必须走这个 helper。
+#[cfg(windows)]
+fn probe_cmd(java: &str) -> Command {
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut c = Command::new(java);
+    c.creation_flags(CREATE_NO_WINDOW);
+    c
+}
+
+#[cfg(not(windows))]
+fn probe_cmd(java: &str) -> Command {
+    Command::new(java)
+}
+
 /// 该 `java` 是否是含 jdk.httpserver 的 JDK（SetupMain 依赖 com.sun.net.httpserver）。
 fn has_httpserver(java: &str) -> bool {
-    if let Ok(out) = Command::new(java).args(["--list-modules"]).output() {
+    if let Ok(out) = probe_cmd(java).args(["--list-modules"]).output() {
         let s = String::from_utf8_lossy(&out.stdout);
         return s.lines().any(|l| l.starts_with("jdk.httpserver@"));
     }
@@ -74,7 +91,7 @@ fn has_httpserver(java: &str) -> bool {
 
 /// 该 `java` 版本 >= 17（后端 target 17）。
 fn java_ge17(java: &str) -> bool {
-    if let Ok(out) = Command::new(java).arg("-version").output() {
+    if let Ok(out) = probe_cmd(java).arg("-version").output() {
         let s = String::from_utf8_lossy(&out.stderr);
         for line in s.lines() {
             let line = line.trim();
@@ -126,7 +143,7 @@ fn resolve_java(res_dir: &Path) -> Option<String> {
             return Some(picked);
         }
     }
-    if Command::new("java").arg("-version").output().map(|o| o.status.success()).unwrap_or(false) {
+    if probe_cmd("java").arg("-version").output().map(|o| o.status.success()).unwrap_or(false) {
         if has_httpserver("java") && java_ge17("java") {
             // PATH 上的裸 "java" 字符串无法定位到具体文件，交给 CREATE_NO_WINDOW 兜底
             log_line("java: PATH hit");
