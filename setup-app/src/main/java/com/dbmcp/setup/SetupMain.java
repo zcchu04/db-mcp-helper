@@ -44,6 +44,17 @@ public final class SetupMain {
 
     static boolean NO_BROWSER = false;
 
+    /** 浏览器壳心跳最后到达时间；看门狗据此在壳关闭后自动退出。--no-browser 模式不启用看门狗。 */
+    private static final java.util.concurrent.atomic.AtomicLong LAST_HEARTBEAT =
+            new java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis());
+    /** 进行中的重任务计数（deploy 解压）；看门狗在空闲超时退出前会等待其归零，避免中断首次解压。 */
+    private static final java.util.concurrent.atomic.AtomicInteger ACTIVE_TASKS =
+            new java.util.concurrent.atomic.AtomicInteger(0);
+    /** HTTP 线程池引用（main 中赋值）；退出时显式 shutdownNow，避免非守护空闲线程卡住 JVM。 */
+    private static java.util.concurrent.ExecutorService executorRef;
+    /** 空闲超时退出阈值：超过此时长无心跳且无进行中任务则自动退出。 */
+    private static final long HEARTBEAT_TIMEOUT_MS = 3L * 60_000;
+
     public static void main(String[] args) {
         for (String a : args) {
             if ("--no-browser".equals(a)) NO_BROWSER = true;
@@ -71,9 +82,20 @@ public final class SetupMain {
             }
 
             HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
+            // 用线程池取代默认 null executor（单线程串行）：避免耗时请求（如 /api/deploy 解压）
+            // 阻塞其他请求（含前端 detect 轮询），也避免浏览器关闭期间仍能独立处理其余 API。
+            executorRef = java.util.concurrent.Executors.newCachedThreadPool(r -> {
+                Thread t = new Thread(r, "setup-http");
+                t.setDaemon(false); // 非守护：保持 JVM 存活，直到 /api/uninstall 或 shutdown 显式退出
+                return t;
+            });
+            server.setExecutor(executorRef);
             server.createContext("/", SetupMain::handle);
             server.start();
             serverRef = server;
+            if (!NO_BROWSER) {
+                startHeartbeatWatchdog();
+            }
             System.out.println("DB MCP Helper 已启动：" + url);
             openBrowser(url);
         } catch (Throwable t) {
@@ -85,6 +107,39 @@ public final class SetupMain {
             log.flush();
             log.close();
         }
+    }
+
+    /** 看门狗：周期性检查浏览器壳心跳；超时且无进行中任务则自动退出。仅浏览器模式启用。 */
+    private static void startHeartbeatWatchdog() {
+        java.util.concurrent.ScheduledExecutorService w =
+                java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+                    Thread t = new Thread(r, "setup-watchdog");
+                    t.setDaemon(true);
+                    return t;
+                });
+        w.scheduleAtFixedRate(() -> {
+            long idle = System.currentTimeMillis() - LAST_HEARTBEAT.get();
+            if (idle > HEARTBEAT_TIMEOUT_MS && ACTIVE_TASKS.get() == 0) {
+                w.shutdownNow();
+                gracefulExit();
+            }
+        }, 30, 30, java.util.concurrent.TimeUnit.SECONDS);
+    }
+
+    /** 优雅退出：停 HTTP + 关线程池 + 退出 JVM。复用 uninstall 的退出路径。 */
+    private static void gracefulExit() {
+        Thread stopper = new Thread(() -> {
+            try {
+                Thread.sleep(300);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+            if (serverRef != null) serverRef.stop(1);
+            if (executorRef != null) executorRef.shutdownNow();
+            System.exit(0);
+        }, "setup-shutdown");
+        stopper.setDaemon(false);
+        stopper.start();
     }
 
     private static Path resolveLogDir() {
@@ -215,6 +270,12 @@ public final class SetupMain {
                     return ok(Prefs.merge(body));
                 }
                 return ok(Prefs.load());
+            case "/api/heartbeat":
+                LAST_HEARTBEAT.set(System.currentTimeMillis());
+                return ok(new JsonObject());
+            case "/api/exit":
+                gracefulExit();
+                return ok(new JsonObject());
             case "/api/uninstall":
                 return ok(uninstall());
             default:
@@ -311,7 +372,7 @@ public final class SetupMain {
         JsonObject runtimeReady = new JsonObject();
         for (DbAdapter a : DbAdapters.all()) {
             Path tk = Installer.toolkitPath(root, a.id(), a);
-            boolean ready = Files.isRegularFile(tk);
+            boolean ready = Installer.isDeployed(tk);
             if (a.runtimeKind() == DbAdapter.RuntimeKind.NODE) {
                 Path node = root.resolve(a.id()).resolve(Installer.RUNTIME_DIR_NAME).resolve("node");
                 ready = ready && (Files.isRegularFile(node)
@@ -364,6 +425,15 @@ public final class SetupMain {
     // ---------- deploy ----------
 
     private static JsonObject deploy(JsonObject body) throws IOException {
+        ACTIVE_TASKS.incrementAndGet();
+        try {
+            return deployImpl(body);
+        } finally {
+            ACTIVE_TASKS.decrementAndGet();
+        }
+    }
+
+    private static JsonObject deployImpl(JsonObject body) throws IOException {
         String dbId = str(body, "dbId");
         DbAdapter adapter = DbAdapters.require(dbId);
         String reqRoot = str(body, "root");
@@ -469,6 +539,27 @@ public final class SetupMain {
             String sn = str(body, "serverName");
             p.serverName = (sn == null || sn.isBlank()) ? null : validateServerName(sn.trim());
         }
+        // 全局唯一性：自定义 MCP Server 名称不得与任何其他实例（任意数据源 / 环境 / 实现）重名
+        if (p.serverName != null) {
+            String selfKey = envKey(dbId, env);
+            for (Map.Entry<String, State.EnvInfo> e : st.envs.entrySet()) {
+                if (e.getKey().equals(selfKey)) {
+                    for (Map.Entry<String, State.ProviderInfo> pr : e.getValue().providers.entrySet()) {
+                        if (pr.getKey().equals(mcpServer)) continue; // 正在保存的自身实现
+                        State.ProviderInfo op = pr.getValue();
+                        if (op.serverName != null && op.serverName.equals(p.serverName)) {
+                            throw new IllegalArgumentException("MCP Server 名称 " + p.serverName + " 已被其他实例占用，必须全局唯一");
+                        }
+                    }
+                    continue;
+                }
+                for (State.ProviderInfo op : e.getValue().providers.values()) {
+                    if (op.serverName != null && op.serverName.equals(p.serverName)) {
+                        throw new IllegalArgumentException("MCP Server 名称 " + p.serverName + " 已被其他实例占用，必须全局唯一");
+                    }
+                }
+            }
+        }
         p.tools = tools;
 
         Installer.writeEnvConfig(root, dbId, env, mcpServer, adapter, info.url, info.user, info.password);
@@ -478,7 +569,7 @@ public final class SetupMain {
         d.addProperty("env", env);
         d.addProperty("dbId", dbId);
         d.addProperty("mcpServer", mcpServer);
-        d.addProperty("configPath", Installer.connectionFile(root, dbId, env, adapter).toString());
+        d.addProperty("configPath", Installer.connectionFile(root, dbId, env, mcpServer, adapter).toString());
         d.addProperty("url", info.url);
         return d;
     }

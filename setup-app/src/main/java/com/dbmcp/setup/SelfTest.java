@@ -46,7 +46,7 @@ public final class SelfTest {
         try {
             Path toolkit = Installer.toolkitPath(baseDir, dbId, adapter);
             Path tap = baseDir.resolve("tap").resolve(Cfg.TAP_FILE_NAME);
-            Path cfg = Installer.configFile(baseDir, dbId, env, adapter);
+            Path cfg = Installer.configFile(baseDir, dbId, env, mcpServer, adapter);
             log.println("toolkit: " + toolkit + " exists=" + (Files.exists(toolkit) && Files.isDirectory(toolkit)));
             log.println("tap:     " + tap + " exists=" + Files.isRegularFile(tap));
             log.println("config:  " + cfg + " exists=" + Files.isRegularFile(cfg));

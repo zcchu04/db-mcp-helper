@@ -92,7 +92,7 @@ const S = {
   prefs: { theme:"system", sidebarCollapsed:false, setupCompleted:false, lastEnv:null },
   route: null,
   slideOver: { dbId:null, env:null, tab:"overview", open:false },
-  wizard: { step:1, dbId:null, env:null, alias:"", aliasTouched:false, password:"", pwdLocked:false, host:"", port:"", user:"", serviceOrDatabase:"", jdbcUrl:"", paste:"", tools:[], testResult:null, serverName:"", mcpServer:"" },
+  wizard: { step:1, dbId:null, env:null, alias:"", aliasTouched:false, password:"", pwdLocked:false, host:"", port:"", user:"", serviceOrDatabase:"", paste:"", tools:[], testResult:null, serverName:"", mcpServer:"" },
   filters: { q:"", dbType:"all", perm:"all", status:"all" },
   cmd: { open:false, q:"", idx:0 },
   modal: null,
@@ -260,7 +260,7 @@ function toggleSidebar(){
 /* ---------- Router ---------- */
 const CRUMB = {
   welcome:"欢迎", setup:"接入向导", overview:"总览",
-  instances:"实例", runtime:"Skill 与运行时",
+  instances:"MCP服务实例", runtime:"Skill 与运行时",
   diagnostics:"排障", system:"系统"
 };
 function parseHash(){
@@ -321,6 +321,8 @@ async function boot(){
   applySidebar();
   bindShell();
   await onHash();
+  // 心跳：周期性告知后端「浏览器壳仍活着」；后端看门狗据此在壳关闭后自动退出向导
+  setInterval(() => { api("/api/heartbeat", {}).catch(() => {}); }, 15000);
 }
 
 /* ---------- Shell binding ---------- */
@@ -426,17 +428,17 @@ function pageSetup(step){
   step = step || 1;
   S.wizard.step = step;
   const total = 3;
-  const names = ["选择数据源","配置实例","自检与注册"];
+  const names = ["选择数据源与实现","配置实例","自检与注册"];
   const stepper = `<div class="stepper">${names.map((n,i) => {
     const idx = i+1;
     const cls = idx < step ? "done" : (idx === step ? "current" : "");
     return `<div class="step ${cls}"><span class="num">${idx < step ? "✓" : idx}</span><span>${esc(n)}</span></div>${i<total-1?'<div class="step-line"></div>':''}`;
   }).join("")}</div>`;
   if (step >= 2 && !S.wizard.dbId){
-    return `<div class="page" style="max-width:1080px">
+    return `<div class="page" style="max-width:1700px">
       <div class="page-title-row"><div><div class="page-title">接入向导</div><div class="page-sub">先完成第一步</div></div></div>
       ${stepper}
-      <div class="card"><div class="empty">${IC.info}<h3>还没有选择数据源</h3><p>向导需要先在第一步选择 Oracle 或 MySQL。</p>
+      <div class="card"><div class="empty">${IC.info}<h3>还没有选择数据源</h3><p>向导需要先在第一步选择数据源与实现。</p>
         <button class="btn primary" onclick="location.hash='#/setup/1'">返回第一步 ${IC.right}</button></div></div>
     </div>`;
   }
@@ -444,7 +446,7 @@ function pageSetup(step){
   if (step === 1) body = setupStep1();
   else if (step === 2) body = setupStep2();
   else body = setupStep3();
-  return `<div class="page" style="max-width:1080px">
+  return `<div class="page" style="max-width:1700px">
     <div class="page-title-row"><div><div class="page-title">接入向导</div><div class="page-sub">3 步完成：${esc(names[step-1])}</div></div></div>
     ${stepper}
     ${body}
@@ -452,29 +454,51 @@ function pageSetup(step){
 }
 
 function setupStep1(){
-  const cur = S.wizard.dbId;
+  const curDb = S.wizard.dbId;
+  const curImpl = S.wizard.mcpServer;
   return `<div class="wizard-split">
     <div>
       <div class="card">
-        <div class="card-header"><h3>选择一种数据源</h3></div>
-        <p class="card-desc">向导每次配置一种数据源的一个实例。添加多个实例可在完成后进「实例」页操作。</p>
-        <div class="db-picker">
-          ${S.adapters.map(a => `<div class="db-pick ${cur===a.id?'on':''}" data-pick-db="${esc(a.id)}">
-            <div class="head">${dbIcon(a.id)}<div class="name">${esc(a.displayName)}</div></div>
-            <div class="meta">默认端口 ${a.defaultPort} · ${a.runtimeKind}</div>
-            <div class="tools">工具 ${a.allTools.length} 个 · Skill 目录 <code>${esc(a.skillDir)}</code></div>
-          </div>`).join("")}
+        <div class="card-header"><h3>选择数据源与 MCP 服务实现</h3></div>
+        <p class="card-desc">按数据源类型浏览，直接选择要接入的 MCP 服务实现。向导每次配置一个实例，添加更多可在完成后进「实例」页操作。</p>
+        <div class="impl-groups">
+          ${S.adapters.map(a => {
+            const opts = a.mcpServerOptions || [];
+            return `<div class="impl-group">
+              <div class="impl-group-header">
+                ${dbIcon(a.id)}
+                <span class="impl-group-name">${esc(a.displayName)}</span>
+                <span class="text-mut" style="font-size:12px; font-weight:400">默认端口 ${a.defaultPort} · ${a.runtimeKind} · ${opts.length ? opts.length + ' 种实现' : '内置实现'}</span>
+              </div>
+              <div class="impl-cards">
+                ${opts.length ? opts.map(o => {
+                  const on = curDb === a.id && curImpl === o.id;
+                  const tools = o.allTools || a.allTools || [];
+                  const show = tools.slice(0, 6);
+                  const more = tools.length - show.length;
+                  return `<div class="impl-card ${on?'on':''}" data-pick-impl data-db="${esc(a.id)}" data-impl="${esc(o.id)}">
+                    <div class="impl-card-name">${esc(o.displayName)}</div>
+                    ${o.description ? `<div class="impl-card-desc">${esc(o.description)}</div>` : ''}
+                    <div class="impl-card-tools">${show.map(t => `<span class="impl-tool-chip">${esc(typeof t === 'string' ? t : t.name || t.id)}</span>`).join("")}${more > 0 ? `<span class="impl-card-tools-more">+${more}</span>` : ''}</div>
+                  </div>`;
+                }).join("") : `<div class="impl-card ${curDb===a.id?'on':''}" data-pick-impl data-db="${esc(a.id)}" data-impl="">
+                    <div class="impl-card-name">默认实现</div>
+                    <div class="impl-card-tools">${(a.allTools||[]).map(t => `<span class="impl-tool-chip">${esc(typeof t === 'string' ? t : t.name || t.id)}</span>`).join("")}</div>
+                  </div>`}
+              </div>
+            </div>`;
+          }).join("")}
         </div>
       </div>
       <div class="flex gap-3 mt-6" style="justify-content:flex-end">
         <button class="btn secondary" id="s1-cancel">取消</button>
-        <button class="btn primary" id="s1-next" ${cur?'':'disabled'}>下一步 ${IC.right}</button>
+        <button class="btn primary" id="s1-next" ${curDb?'':'disabled'}>下一步 ${IC.right}</button>
       </div>
     </div>
     <aside class="wizard-side">
       <h4>本步会做什么</h4>
       <ul>
-        <li>确认要接入的数据库类型</li>
+        <li>确认要接入的数据库类型与 MCP 服务实现</li>
         <li>如未部署 toolkit / tap，向导下一步会自动执行 <code>deploy</code></li>
         <li>Skill 目录同步到 QoderWork / Claude / Agents</li>
       </ul>
@@ -482,6 +506,7 @@ function setupStep1(){
       <ul>
         <li>Oracle 走 JDBC + JAVA_JAR 运行时</li>
         <li>MySQL 走 Node 运行时 + 环境变量注入</li>
+        <li>同一数据源可按不同实现拆成多个实例</li>
       </ul>
     </aside>
   </div>`;
@@ -498,6 +523,54 @@ function toolListHtml(a, srvId, checkedTools){
     <span class="mono">${esc(t)}</span>
     ${req.indexOf(t)>=0?'<span class="tag req">必选</span>':(t.includes("write")||["insert","update","delete"].includes(t)?'<span class="tag danger">写权限</span>':'')}
   </label>`).join("");
+}
+
+/* MCP Server 名称全局唯一性实时校验：扫描所有实例（排除自身），命中即提示。
+   命名规则与后端 validateServerName / Installer.validEnvName 对齐：小写字母开头，仅小写字母/数字/连字符，≤32 位 */
+function checkServerNameUnique(){
+  const el = $("#s2-servername");
+  const hint = $("#s2-servername-hint");
+  if (!el || !hint) return true;
+  const sn = el.value.trim();
+  if (!sn){ hint.className = "field-msg"; hint.textContent = ""; S.wizard.serverNameDup = false; return true; }
+  if (!/^[a-z][a-z0-9-]{0,31}$/.test(sn)){
+    hint.className = "field-msg err";
+    hint.textContent = "名称格式不合法：小写字母开头，仅含小写字母/数字/连字符，≤32 位";
+    S.wizard.serverNameDup = true;
+    return false;
+  }
+  const w = S.wizard;
+  const sel = $$('input[name="mcp-server-impl"]:checked')[0];
+  const curImpl = sel ? sel.value : (w.mcpServer || "");
+  const hit = listEnvs().find(v => v.info.serverName && v.info.serverName === sn
+      && !(v.dbId === w.dbId && v.env === w.env && (v.mcpServer||"") === (curImpl||"")));
+  if (hit){
+    hint.className = "field-msg err";
+    hint.textContent = "该名称已被实例 " + hit.dbId + "/" + hit.env + (hit.mcpServer ? (" (" + hit.mcpServer + ")") : "") + " 占用，需全局唯一";
+    S.wizard.serverNameDup = true;
+    return false;
+  }
+  hint.className = "field-msg ok";
+  hint.textContent = "✓ 名称可用（全局唯一）";
+  S.wizard.serverNameDup = false;
+  return true;
+}
+
+function computeJdbcUrl(){
+  const w = S.wizard;
+  const a = adapter(w.dbId);
+  if (!a) return "";
+  const h = ($("#s2-host") || {}).value || w.host || "";
+  const p = ($("#s2-port") || {}).value || w.port || a.defaultPort || "";
+  const s = ($("#s2-service") || {}).value || w.serviceOrDatabase || "";
+  let url = "";
+  if (a.id === "oracle") url = "jdbc:oracle:thin:@" + h + ":" + p + "/" + s;
+  else if (a.id === "mysql") url = "jdbc:mysql://" + h + ":" + p + "/" + s;
+  else if (a.id === "doris") url = "jdbc:mysql://" + h + ":" + p + "/" + s;
+  else url = h && p ? (h + ":" + p + (s ? "/" + s : "")) : "";
+  const el = $("#s2-jdbc-display");
+  if (el) el.textContent = url || "(请填写 Host / Port / " + (a.id === 'oracle' ? 'Service Name' : 'Database') + ")";
+  return url;
 }
 
 function setupStep2(){
@@ -523,12 +596,17 @@ function setupStep2(){
     <div>
       <div class="card">
         <div class="card-header">
-          <h3>${dbIcon(a.id)} 配置 ${esc(a.displayName)} 实例</h3>
-          <button class="btn ghost sm" id="s2-switch-db">切换数据源</button>
+          <h3>${dbIcon(a.id)} 配置 ${esc(a.displayName)} 实例${env?` <span class="chip mono" title="默认 MCP Server 名称">${esc(defServerName)}</span>`:""}</h3>
+          <button class="btn ghost sm" id="s2-switch-db">切换数据源/实现</button>
+        </div>
+        <div class="field">
+          <div class="field-label"><span>MCP Server 名称 (可选)</span><span class="field-hint">注册到 mcp.json 的连接器名 · 必须全局唯一 · 留空使用默认规则</span></div>
+          <input class="input mono" id="s2-servername" placeholder="${esc(defServerName)}" value="${esc(serverNameVal)}">
+          <div id="s2-servername-hint" class="field-msg"></div>
         </div>
         <div class="row">
           <div class="field">
-            <div class="field-label"><span>实例标识 <span class="req">*</span></span><span class="field-hint">小写字母 / 数字 / 连字符</span></div>
+            <div class="field-label"><span>实例环境标识 <span class="req">*</span></span><span class="field-hint">小写字母 / 数字 / 连字符</span></div>
             <input class="input mono" id="s2-env" placeholder="uat / dev / prod-report" value="${esc(env)}">
             <div class="flex gap-2 items-center" style="flex-wrap:wrap; margin-top:6px">
               <span class="text-mut" style="font-size:11px">常用：</span>
@@ -540,7 +618,7 @@ function setupStep2(){
             <input class="input" id="s2-alias" placeholder="验收 · 生产" value="${esc(w.alias || (info && info.aliases ? info.aliases.join(" · ") : ""))}">
             <div id="s2-alias-chips" class="flex gap-2 items-center" style="flex-wrap:wrap; margin-top:6px">
               <span class="text-mut" style="font-size:11px">根据标识推荐：</span>
-              ${aliasPresetFor(env).map(t => `<button class="chip-add" data-alias-preset="${esc(t)}">+ ${esc(t)}</button>`).join("") || '<span class="text-mut" style="font-size:11px">输入实例标识后自动推荐</span>'}
+              ${aliasPresetFor(env).map(t => `<button class="chip-add" data-alias-preset="${esc(t)}">+ ${esc(t)}</button>`).join("") || '<span class="text-mut" style="font-size:11px">输入实例环境标识后自动推荐</span>'}
             </div>
           </div>
         </div>
@@ -567,12 +645,8 @@ function setupStep2(){
                  ${w.pwdLocked?'readonly':''}
                  placeholder="${w.pwdLocked?('••••••  ('+( (w.password || (info && info.password) || "").length )+' 位) · 出于安全不回显 · 双击编辑'):'数据库登录口令'}"
                  value="${w.pwdLocked?'':esc(w.password || (info && info.password) || '')}"></div>
-        <div class="field"><div class="field-label">JDBC URL (可选，Oracle 优先)</div>
-          <input class="input mono" id="s2-jdbc" value="${esc(w.jdbcUrl || (info && info.url) || "")}"></div>
-        <div class="field">
-          <div class="field-label"><span>MCP Server 名称 (可选)</span><span class="field-hint">注册到 mcp.json 的连接器名 · 留空使用默认规则</span></div>
-          <input class="input mono" id="s2-servername" placeholder="${esc(defServerName)}" value="${esc(serverNameVal)}">
-        </div>
+        <div class="field"><div class="field-label"><span>JDBC URL</span><span class="field-hint">根据 Host / Port / ${a.id === 'oracle' ? 'Service Name' : 'Database'} 自动拼接</span></div>
+          <div class="input mono" id="s2-jdbc-display" style="color:var(--text-muted); cursor:default; user-select:all; background:var(--bg-inset)"></div></div>
         <div class="card tight" style="background:var(--bg-inset); margin-top:var(--s4)">
           <div class="field-label" style="margin-bottom:8px">MCP 服务实现</div>
           ${srvOpts.length ? srvOpts.map(o => `<label class="tool">
@@ -613,10 +687,11 @@ function setupStep3(){
   const a = adapter(w.dbId);
   const env = w.env;
   const tr = w.testResult;
+  const s3ServerName = serverNameFor(w.dbId, w.env, w.mcpServer);
   return `<div class="wizard-split">
     <div>
       <div class="card">
-        <div class="card-header"><h3>${dbIcon(w.dbId)} 连通自检</h3></div>
+        <div class="card-header"><h3>${dbIcon(w.dbId)} 连通自检 · <span class="chip mono">${esc(s3ServerName)}</span></h3></div>
         <p class="card-desc">进入本步自动执行连通自检；通过后在「完成向导」后自动拉起 mcp 注册弹框。</p>
         <div id="test-block">${tr ? renderTestResult(tr) : '<p class="text-mut">自检进行中…</p>'}</div>
         <div class="field-label" style="margin-top:14px">自检日志（实时）</div>
@@ -718,7 +793,7 @@ function pageInstances(){
   const envs = listEnvs().filter(instFilter);
   const f = S.filters;
   return `<div class="page">
-    <div class="page-title-row"><div><div class="page-title">实例</div><div class="page-sub">${listEnvs().length} 个实现实例 · 同一数据库/环境可按不同 MCP 提供方拆成多个独立连接器</div></div>
+    <div class="page-title-row"><div><div class="page-title">MCP服务实例</div><div class="page-sub">${listEnvs().length} 个实现实例 · 同一数据库/环境可按不同 MCP 提供方拆成多个独立连接器</div></div>
       <div class="flex gap-2"><button class="btn secondary sm" id="inst-refresh">${IC.refresh} 刷新</button><button class="btn primary sm" id="inst-add">${IC.plus} 添加实例</button></div>
     </div>
     <div class="filter-bar">
@@ -775,6 +850,7 @@ function instCard(x){
   const rwTools = ["write-query","insert","update","delete"];
   const isRw = (x.info.tools || []).some(tt => rwTools.includes(tt));
   const alias = (x.info.aliases||[]).join(" · ");
+  const serverName = serverNameFor(x.dbId, x.env, x.mcpServer);
   // 数据库类型名 + 实际 MCP server 实现显示名
   const dbTypeName = a.displayName || x.dbId || "—";
   const srvOpts = a.mcpServerOptions || [];
@@ -784,10 +860,11 @@ function instCard(x){
   const srvDesc = srvOpt.description || "";
   return `<div class="inst-card" data-open="${esc(x.dbId)}/${esc(x.env)}/${esc(x.mcpServer)}">
     <button class="icon-btn kebab" data-kebab="${esc(x.dbId)}/${esc(x.env)}/${esc(x.mcpServer)}">${IC.kebab}</button>
-    <div class="head">${dbIcon(x.dbId)}<div class="env">${esc(x.env)}</div>${alias?`<div class="alias">${esc(alias)}</div>`:""}</div>
+    <div class="head">${dbIcon(x.dbId)}<div class="env" title="MCP Server 名称 · ${esc(serverName)}">${esc(serverName)}</div></div>
+    <div class="alias">${esc(x.env)}${alias?" · "+esc(alias):""} · ${esc(dbTypeName)} · ${esc(srvDisplay)}</div>
     <div class="meta">${esc(x.info.host||"—")}:${x.info.port||a.defaultPort||""}${x.info.user?" · "+esc(x.info.user):""}</div>
     <div class="info-grid">
-      <div class="info-cell"><span class="info-key">数据库</span><span class="info-val">${esc(dbTypeName)}</span></div>
+      <div class="info-cell"><span class="info-key">连接器名</span><span class="info-val mono" title="MCP Server 名称">${esc(serverName)}</span></div>
       <div class="info-cell"><span class="info-key">MCP 实现</span><span class="info-val" title="${esc(srvDesc)}">${esc(srvDisplay)}</span></div>
     </div>
     <div class="badges">
@@ -976,8 +1053,9 @@ function renderSlideOver(x){
   const alias = (x.info.aliases||[]);
   const srvOpts2 = a.mcpServerOptions || [];
   const srvOpt2 = srvOpts2.find(o => o.id === x.mcpServer) || srvOpts2[0] || {};
+  const serverName = serverNameFor(x.dbId, x.env, x.mcpServer);
   return `<div class="so-header">
-    <div class="so-title">${dbIcon(x.dbId)}<span>${esc(x.env)}</span><span class="text-mut" style="font-weight:400">· ${esc(a.displayName||x.dbId)}</span>${srvOpt2.displayName?`<span class="chip mono">${esc(srvOpt2.displayName)}</span>`:""}${alias.map(s=>`<span class="chip">${esc(s)}</span>`).join("")}</div>
+    <div class="so-title">${dbIcon(x.dbId)}<span title="MCP Server 名称">${esc(serverName)}</span><span class="text-mut" style="font-weight:400">· ${esc(x.env)} · ${esc(a.displayName||x.dbId)}</span>${srvOpt2.displayName?`<span class="chip mono">${esc(srvOpt2.displayName)}</span>`:""}${alias.map(s=>`<span class="chip">${esc(s)}</span>`).join("")}</div>
     <button class="so-close" id="so-close">${IC.x}</button>
   </div>
   <div class="so-tabs">${["overview","tools","logs"].map(k => `<div class="so-tab ${S.slideOver.tab===k?'on':''}" data-tab="${k}">${({overview:"概览",tools:"权限",logs:"日志"})[k]}</div>`).join("")}</div>
@@ -1003,6 +1081,7 @@ function renderSlideOverTab(x){
       ${t?`<span class="badge ${t.ok?'info':'no'}">自检 ${t.ok?'通过':'异常'} · ${esc(relTime(t.ts))}</span>`:""}
     </div>
     <dl class="kv">
+      <dt>连接器名</dt><dd><code style="font-size:14px; font-weight:600">${esc(serverNameFor(x.dbId, x.env, x.mcpServer))}</code></dd><dt></dt>
       <dt>数据源</dt><dd>${dbIcon(x.dbId)} ${esc(a.displayName||x.dbId)}</dd><dt></dt>
       <dt>实现</dt><dd>${esc(srvOpt2.displayName || x.mcpServer || "默认实现")}</dd><dt></dt>
       <dt>Host</dt><dd>${esc(x.info.host||"—")}</dd><dt></dt>
@@ -1011,7 +1090,6 @@ function renderSlideOverTab(x){
       <dt>User</dt><dd>${esc(x.info.user||"—")}</dd><dt></dt>
       <dt>密码</dt><dd>${x.info.password?'<code>'+ '•'.repeat(Math.min(12, x.info.password.length)) +'</code> <button class="btn ghost sm" id="so-pw-reveal">显示</button>':'<span class="text-mut">未设置</span>'}</dd><dt></dt>
       ${x.info.url?`<dt>JDBC URL</dt><dd>${esc(x.info.url)}</dd><dt></dt>`:""}
-      <dt>连接器名</dt><dd><code>${esc(serverNameFor(x.dbId, x.env, x.mcpServer))}</code></dd><dt></dt>
       <dt>别名</dt><dd>${(x.info.aliases&&x.info.aliases.length)?x.info.aliases.map(s=>'<span class="chip">'+esc(s)+'</span>').join(" "):'<span class="text-mut">无</span>'}</dd><dt></dt>
     </dl>
     ${t && !t.ok ? `<div class="card tight" style="border-left:3px solid var(--danger); background:var(--danger-soft); margin-top:16px">
@@ -1144,7 +1222,7 @@ function openAddProvider(x){
       aliasTouched: !!(info.aliases && info.aliases.length),
       host: info.host || "", port: info.port || "", user: info.user || "",
       password: info.password || "", pwdLocked: !!info.password,
-      serviceOrDatabase: info.database || "", jdbcUrl: info.url || "",
+      serviceOrDatabase: info.database || "",
       paste:"", tools: (opt.requiredTools || a.requiredTools || []).slice(), testResult:null,
       serverName:"", mcpServer: srv
     };
@@ -1807,7 +1885,7 @@ function bindPage(){
       aliasTouched: !!(info.aliases && info.aliases.length),
       host: info.host || "", port: info.port || "", user: info.user || "",
       password: info.password || "", pwdLocked: !!info.password,
-      serviceOrDatabase: info.database || "", jdbcUrl: info.url || "",
+      serviceOrDatabase: info.database || "",
       paste:"", tools: (info.tools||[]).slice(), testResult:null,
       serverName: info.serverName || "", mcpServer: info.mcpServer || ""
     };
@@ -1855,24 +1933,23 @@ function bindPage(){
 
   // Setup wizard
   bind("#s1-cancel", () => navigate("#/overview"));
-  $$("[data-pick-db]").forEach(el => el.onclick = () => {
-    // 切换 dbId 时清空上次的连接残留，防止 Oracle 值串到 MySQL 表单（同样反过来）
-    if (S.wizard.dbId !== el.dataset.pickDb){
-      S.wizard = { step:1, dbId:el.dataset.pickDb, env:null, alias:"", aliasTouched:false,
+  $$("[data-pick-impl]").forEach(el => el.onclick = () => {
+    const db = el.dataset.db;
+    const impl = el.dataset.impl || "";
+    if (S.wizard.dbId !== db || S.wizard.mcpServer !== impl){
+      S.wizard = { step:1, dbId:db, env:null, alias:"", aliasTouched:false,
                    password:"", pwdLocked:false, host:"", port:"", user:"",
-                   serviceOrDatabase:"", jdbcUrl:"", paste:"", tools:[],
-                   testResult:null, serverName:"", mcpServer:"" };
-    } else {
-      S.wizard.dbId = el.dataset.pickDb;
+                   serviceOrDatabase:"", paste:"", tools:[],
+                   testResult:null, serverName:"", mcpServer:impl };
     }
-    $$("[data-pick-db]").forEach(x => x.classList.toggle("on", x === el));
+    $$("[data-pick-impl]").forEach(x => x.classList.toggle("on", x === el));
     const nx = $("#s1-next"); if (nx) nx.disabled = false;
   });
   bind("#s1-next", async () => {
-    if (!S.wizard.dbId){ toast("请选择一种数据源", "warn"); return; }
+    if (!S.wizard.dbId){ toast("请选择数据源与实现", "warn"); return; }
     const rr = (S.detect && S.detect.runtimeReady) || {};
     const firstTime = !rr[S.wizard.dbId];
-    showLoading(firstTime ? "正在部署运行时（首次需解压内置资源，可能持续数秒）…" : "正在部署运行时…");
+    showLoading(firstTime ? "正在部署运行时（首次需解压内置 Node 运行时与依赖，可能持续数分钟）…" : "正在部署运行时…");
     try {
       await api("/api/deploy", { dbId: S.wizard.dbId });
       await refreshDetect();
@@ -1881,6 +1958,11 @@ function bindPage(){
     finally { hideLoading(); }
   });
   bind("#s2-switch-db", () => navigate("#/setup/1"));
+  // JDBC URL 实时拼接
+  ["#s2-host", "#s2-port", "#s2-service"].forEach(sel => {
+    const el = $(sel); if (el) el.addEventListener("input", computeJdbcUrl);
+  });
+  computeJdbcUrl();
   // 实例标识 → 别名预设 联动
   $$("[data-env-code]").forEach(el => el.onclick = () => {
     const code = el.dataset.envCode;
@@ -1924,6 +2006,14 @@ function bindPage(){
       S.wizard.aliasTouched = true;
       S.wizard.alias = e.target.value;
     });
+  }
+  const snInput = $("#s2-servername");
+  if (snInput){
+    snInput.addEventListener("input", () => {
+      S.wizard.serverName = snInput.value.trim();
+      checkServerNameUnique();
+    });
+    checkServerNameUnique();
   }
   function refreshAliasChips(code){
     const box = $("#s2-alias-chips"); if (!box) return;
@@ -1986,7 +2076,6 @@ function bindPage(){
       if (f.port) S.wizard.port = f.port;
       if (f.user) S.wizard.user = f.user;
       if (f.service || f.database) S.wizard.serviceOrDatabase = f.service || f.database;
-      if (f.url || f.jdbcUrl) S.wizard.jdbcUrl = f.url || f.jdbcUrl;
       let lockedNow = false;
       if (f.password){
         S.wizard.password = f.password;
@@ -1999,6 +2088,10 @@ function bindPage(){
     } catch (e){ toast(e.message, "err"); }
   });
   bind("#s2-next", async () => {
+    if (!checkServerNameUnique()){
+      toast("MCP Server 名称不合法或已被其他实例占用，请修改后再保存", "err");
+      return;
+    }
     const envCode = $("#s2-env").value.trim();
     let aliases = ($("#s2-alias").value || "").split(/[·,;\s]+/).filter(Boolean);
     if (aliases.length === 0) aliases = aliasPresetFor(envCode);
@@ -2012,7 +2105,6 @@ function bindPage(){
       password: pwdVal,
       service: $("#s2-service").value.trim(),
       database: $("#s2-service").value.trim(),
-      jdbcUrl: $("#s2-jdbc").value.trim(),
       paste: $("#s2-paste").value,
       aliases: aliases
     };

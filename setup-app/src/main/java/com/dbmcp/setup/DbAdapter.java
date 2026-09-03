@@ -97,6 +97,22 @@ public interface DbAdapter {
         return List.of();
     }
 
+    /**
+     * toolkit 资源路径中使用的源数据库 id（默认等于 id()）。
+     * 兼容协议的数据库（如 Doris 复用 MySQL 协议）可返回源库 id 以避免在 jar 中重复打包同一份 toolkit。
+     */
+    default String toolkitSourceDbId() {
+        return id();
+    }
+
+    /**
+     * 服务端运行时资源路径中使用的源数据库 id（默认等于 id()）。
+     * 与 {@link #toolkitSourceDbId()} 同理，用于共享 node 运行时等。
+     */
+    default String runtimeSourceDbId() {
+        return id();
+    }
+
     /** 服务端运行时种类。 */
     RuntimeKind runtimeKind();
 

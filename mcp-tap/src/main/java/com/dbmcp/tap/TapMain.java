@@ -9,40 +9,38 @@ import java.io.OutputStreamWriter;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 /**
  * MCP stdio 监听代理（tap）。
  *
- * <p>职责：在 AI 客户端与真实 MCP 服务器之间做<b>字节级透传</b>，同时旁路解析 JSON-RPC
- * 消息，把工具调用事件（时间、工具名、耗时、成败、SQL 摘要）追加写入 JSONL 日志。
+ * <p>职责：在 AI 客户端与真实 MCP 服务器之间做<b>字节级透传</b>，同时异步记录原始报文日志。
  *
- * <p>设计原则：协议流零改动——透传线程直接搬运原始字节，不做任何重编码；解析只作用于
- * 行的副本，且任何解析异常都被静默吞掉，绝不影响协议本身。
+ * <p>设计原则：
+ * <ul>
+ *   <li>字节转发路径零阻塞——pump 只做 read→write，不做任何正则匹配或字符串构造。</li>
+ *   <li>行分割（纯字节扫描）仍在转发前同步完成，但完整行提交到线程池异步写日志。</li>
+ *   <li>无论日志线程发生什么（异常、OOM、慢盘），都不影响协议通信链路。</li>
+ * </ul>
  *
  * <p>用法：{@code java -jar mcp-tap.jar --log <日志文件> -- <目标命令...>}
  */
 public final class TapMain {
 
-    /** 提取 JSON-RPC 消息 id（数字或字符串）。 */
-    private static final Pattern ID = Pattern.compile("\"id\"\\s*:\\s*(\"[^\"]*\"|\\d+)");
-    /** 提取请求方法名。 */
-    private static final Pattern METHOD = Pattern.compile("\"method\"\\s*:\\s*\"([^\"]+)\"");
-    /** 提取 tools/call 请求中的工具名（params.name）。 */
-    private static final Pattern TOOL_NAME = Pattern.compile("\"name\"\\s*:\\s*\"([^\"]+)\"");
-    /** 提取 SQL 文本用于摘要。 */
-    private static final Pattern SQL = Pattern.compile("\"sql\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"");
-    /** 响应中的业务错误标记（CallToolResult.isError）。 */
-    private static final Pattern IS_ERROR = Pattern.compile("\"isError\"\\s*:\\s*true");
+    private static final ExecutorService LOG_POOL = new ThreadPoolExecutor(
+            1, 2, 60, TimeUnit.SECONDS,
+            new LinkedBlockingQueue<>(1024),
+            r -> {
+                Thread t = new Thread(r, "tap-log");
+                t.setDaemon(true);
+                return t;
+            },
+            new ThreadPoolExecutor.DiscardPolicy());
 
-    /** 在途调用：消息 id → 调用信息。 */
-    private static final Map<String, Pending> PENDING = new ConcurrentHashMap<>();
-
-    /** 日志写入器，为 null 表示未启用日志。 */
-    private static Writer logWriter;
+    private static volatile Writer logWriter;
 
     private TapMain() {
     }
@@ -85,139 +83,109 @@ public final class TapMain {
             return;
         }
 
-        Thread outPump = pump(child.getInputStream(), System.out, TapMain::scanResponse, "out");
-        Thread errPump = pump(child.getErrorStream(), System.err, null, "err");
-        // stdin 泵在当前线程执行，结束后等待子进程
-        pumpBlocking(System.in, child.getOutputStream(), TapMain::scanRequest);
+        Thread outPump = pump(child.getInputStream(), System.out, true, "out");
+        Thread errPump = pump(child.getErrorStream(), System.err, false, "err");
+        pumpBlocking(System.in, child.getOutputStream(), true, "in");
 
         int code = child.waitFor();
         outPump.join(3000);
         errPump.join(3000);
+        LOG_POOL.shutdown();
         if (logWriter != null) {
             try {
                 logWriter.close();
             } catch (IOException ignored) {
-                // 关闭失败不影响退出
             }
         }
         System.exit(code);
     }
 
-    /** 启动一个守护线程做 输入流→输出流 的字节泵，可选行扫描。 */
-    private static Thread pump(InputStream in, OutputStream out, LineHandler scan, String name) {
-        Thread t = new Thread(() -> pumpBlocking(in, out, scan), "tap-" + name);
+    private static Thread pump(InputStream in, OutputStream out, boolean log, String name) {
+        Thread t = new Thread(() -> pumpBlocking(in, out, log, name), "tap-" + name);
         t.setDaemon(true);
         t.start();
         return t;
     }
 
-    /** 字节泵：逐块透传并把行副本交给扫描器；任何异常只结束本方向。 */
-    private static void pumpBlocking(InputStream in, OutputStream out, LineHandler scan) {
-        LineSplitter splitter = new LineSplitter(scan);
+    /**
+     * 字节泵：纯 read→write 搬运，转发路径上零正则、零字符串分配。
+     * 行分割（纯字节扫描）仅在启用日志时执行，完整行异步提交线程池。
+     */
+    private static void pumpBlocking(InputStream in, OutputStream out, boolean log, String name) {
+        LineSplitter splitter = log && logWriter != null ? new LineSplitter(name) : null;
         byte[] buf = new byte[8192];
         try {
             int n;
             while ((n = in.read(buf)) != -1) {
-                // 先扫描后转发：保证日志先于响应落盘，客户端收到响应即代表记录已完成
-                if (scan != null) {
-                    splitter.feed(buf, 0, n);
-                }
                 out.write(buf, 0, n);
                 out.flush();
+                if (splitter != null) {
+                    splitter.feed(buf, 0, n);
+                }
             }
             out.flush();
         } catch (IOException e) {
-            // 管道关闭属正常结束路径，不透传错误
+            // 管道关闭属正常结束路径
         } finally {
             if (out != System.out && out != System.err) {
                 try {
                     out.close();
                 } catch (IOException ignored) {
-                    // 忽略关闭异常
                 }
             }
         }
     }
 
-    @FunctionalInterface
-    private interface LineHandler {
-        void handle(String line);
-    }
+    /** 按 \n 切行的纯字节扫描器，无正则。完整行异步提交日志线程池。 */
+    private static final class LineSplitter {
+        private final ByteArrayOutputStream pending = new ByteArrayOutputStream();
+        private final String direction;
 
-    /** 扫描客户端→服务器方向：捕获 tools/call 请求。 */
-    private static void scanRequest(String line) {
-        try {
-            Matcher m = METHOD.matcher(line);
-            if (!m.find() || !"tools/call".equals(m.group(1))) {
-                return;
+        LineSplitter(String direction) {
+            this.direction = direction;
+        }
+
+        void feed(byte[] buf, int off, int len) {
+            try {
+                for (int i = off; i < off + len; i++) {
+                    if (buf[i] == '\n') {
+                        String line = pending.toString(StandardCharsets.UTF_8).trim();
+                        pending.reset();
+                        if (!line.isEmpty()) {
+                            submitLog(direction, line);
+                        }
+                    } else {
+                        pending.write(buf[i]);
+                    }
+                }
+            } catch (RuntimeException ignored) {
+                pending.reset();
             }
-            String id = extractId(line);
-            if (id == null) {
-                return;
-            }
-            Matcher tn = TOOL_NAME.matcher(line);
-            String tool = tn.find() ? tn.group(1) : "unknown";
-            String sqlDigest = null;
-            Matcher sq = SQL.matcher(line);
-            if (sq.find()) {
-                String sql = sq.group(1).replace("\\\"", "\"").replace("\\n", " ");
-                sqlDigest = sql.length() > 120 ? sql.substring(0, 120) + "..." : sql;
-            }
-            PENDING.put(id, new Pending(tool, sqlDigest, System.nanoTime()));
-        } catch (RuntimeException ignored) {
-            // 解析失败静默降级
         }
     }
 
-    /** 扫描服务器→客户端方向：匹配响应并落日志。 */
-    private static void scanResponse(String line) {
-        try {
-            if (line.indexOf("\"method\"") >= 0) {
-                return; // 服务器通知，无 id 对应关系
-            }
-            String id = extractId(line);
-            if (id == null) {
-                return;
-            }
-            Pending p = PENDING.remove(id);
-            if (p == null) {
-                return; // initialize 等非工具调用响应
-            }
-            long durMs = (System.nanoTime() - p.startNanos) / 1_000_000;
-            boolean error = IS_ERROR.matcher(line).find() || line.contains("\"error\"");
-            writeLog(p, durMs, error);
-        } catch (RuntimeException ignored) {
-            // 解析失败静默降级
-        }
+    /** 将完整行异步提交日志线程池，队列满时直接丢弃，绝不阻塞转发。 */
+    private static void submitLog(String direction, String line) {
+        LOG_POOL.submit(() -> writeLog(direction, line));
     }
 
-    private static String extractId(String line) {
-        Matcher m = ID.matcher(line);
-        return m.find() ? m.group(1).replace("\"", "") : null;
-    }
-
-    private static synchronized void writeLog(Pending p, long durMs, boolean error) {
+    private static synchronized void writeLog(String direction, String line) {
         if (logWriter == null) {
             return;
         }
         try {
-            StringBuilder sb = new StringBuilder(256);
-            sb.append("{\"ts\":\"").append(Instant.now()).append('"');
-            sb.append(",\"tool\":").append(jsonString(p.tool));
-            if (p.sqlDigest != null) {
-                sb.append(",\"sql\":").append(jsonString(p.sqlDigest));
-            }
-            sb.append(",\"durMs\":").append(durMs);
-            sb.append(",\"error\":").append(error).append('}');
-            logWriter.write(sb.toString());
-            logWriter.write('\n');
+            logWriter.write("{\"ts\":\"");
+            logWriter.write(Instant.now().toString());
+            logWriter.write("\",\"dir\":\"");
+            logWriter.write(direction);
+            logWriter.write("\",\"msg\":");
+            logWriter.write(jsonString(line));
+            logWriter.write("}\n");
             logWriter.flush();
         } catch (IOException ignored) {
-            // 日志失败不影响协议
         }
     }
 
-    /** 极简 JSON 字符串转义。 */
     private static String jsonString(String s) {
         StringBuilder sb = new StringBuilder(s.length() + 8).append('"');
         for (int i = 0; i < s.length(); i++) {
@@ -238,46 +206,5 @@ public final class TapMain {
             }
         }
         return sb.append('"').toString();
-    }
-
-    /** 把字节块切成完整行交给扫描器，跨块保留残留。 */
-    private static final class LineSplitter {
-        private final LineHandler handler;
-        private final ByteArrayOutputStream pending = new ByteArrayOutputStream();
-
-        LineSplitter(LineHandler handler) {
-            this.handler = handler;
-        }
-
-        void feed(byte[] buf, int off, int len) {
-            try {
-                for (int i = off; i < off + len; i++) {
-                    byte b = buf[i];
-                    if (b == '\n') {
-                        String line = pending.toString(StandardCharsets.UTF_8).trim();
-                        pending.reset();
-                        if (!line.isEmpty()) {
-                            handler.handle(line);
-                        }
-                    } else {
-                        pending.write(b);
-                    }
-                }
-            } catch (RuntimeException ignored) {
-                pending.reset();
-            }
-        }
-    }
-
-    private static final class Pending {
-        final String tool;
-        final String sqlDigest;
-        final long startNanos;
-
-        Pending(String tool, String sqlDigest, long startNanos) {
-            this.tool = tool;
-            this.sqlDigest = sqlDigest;
-            this.startNanos = startNanos;
-        }
     }
 }

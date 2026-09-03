@@ -16,6 +16,7 @@ public final class DbAdapters {
     static {
         register(new OracleAdapter());
         register(new MySqlAdapter());
+        register(new DorisAdapter());
     }
 
     private DbAdapters() {

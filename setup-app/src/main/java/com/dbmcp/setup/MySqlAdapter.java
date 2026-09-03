@@ -145,12 +145,12 @@ public final class MySqlAdapter implements DbAdapter {
 
     @Override
     public String renderConfig(String env, String url, String user, String password) {
-        // 仅作本地留档（server 实际读进程环境变量）；均通过 # 注释呈现，避免被误当文件配置
         StringBuilder sb = new StringBuilder();
-        sb.append("# DB MCP Helper 环境配置（由 db-mcp-setup 生成，MySQL 实际以环境变量注入，此文件仅留档）\n");
+        sb.append("# DB MCP Helper 环境配置（由 db-mcp-setup 生成）\n");
         sb.append("# 修改后需在 AI 平台的连接器管理中对 ").append(serverPrefix()).append(env).append(" 执行 disable→enable 才会重载\n");
-        envVars(url, user, password, defaultPort(), dbFromUrl(url), List.of()).forEach((k, v) ->
-                sb.append("# ").append(k).append("=").append(v).append("\n"));
+        int port = portFromUrl(url);
+        envVars(url, user, password, port > 0 ? port : defaultPort(), dbFromUrl(url), List.of()).forEach((k, v) ->
+                sb.append(k).append("=").append(v).append("\n"));
         return sb.toString();
     }
 
@@ -247,7 +247,7 @@ public final class MySqlAdapter implements DbAdapter {
         }
     }
 
-    private static String hostFromUrl(String url) {
+    static String hostFromUrl(String url) {
         if (url == null) {
             return "";
         }
@@ -264,7 +264,7 @@ public final class MySqlAdapter implements DbAdapter {
         return end < 0 ? s : s.substring(0, end);
     }
 
-    private static String dbFromUrl(String url) {
+    static String dbFromUrl(String url) {
         if (url == null) {
             return "";
         }
@@ -274,5 +274,28 @@ public final class MySqlAdapter implements DbAdapter {
         }
         int q = url.indexOf('?', slash);
         return q < 0 ? url.substring(slash + 1) : url.substring(slash + 1, q);
+    }
+
+    static int portFromUrl(String url) {
+        if (url == null) {
+            return -1;
+        }
+        int at = url.lastIndexOf("@");
+        String s = at >= 0 ? url.substring(at + 1) : url;
+        int slash = s.indexOf("://");
+        if (slash >= 0) {
+            s = s.substring(slash + 3);
+        }
+        int colon = s.indexOf(':');
+        if (colon < 0) {
+            return -1;
+        }
+        int q = s.indexOf('/', colon);
+        String portStr = q < 0 ? s.substring(colon + 1) : s.substring(colon + 1, q);
+        try {
+            return Integer.parseInt(portStr);
+        } catch (NumberFormatException e) {
+            return -1;
+        }
     }
 }

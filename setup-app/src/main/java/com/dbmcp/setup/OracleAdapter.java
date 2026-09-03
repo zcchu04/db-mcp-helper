@@ -116,7 +116,7 @@ public final class OracleAdapter implements DbAdapter {
         return List.of(
                 java, "-jar", baseDir.resolve("tap").resolve(Cfg.TAP_FILE_NAME).toString(),
                 "--log", Installer.callLog(baseDir, dbId, env, mcpServer).toString(), "--",
-                java, "-DconfigFile=" + Installer.configFile(baseDir, dbId, env, this).toString(),
+                java, "-DconfigFile=" + Installer.configFile(baseDir, dbId, env, mcpServer, this).toString(),
                 "-Dtools=" + String.join(",", tools),
                 "-jar", Installer.toolkitPath(baseDir, dbId, this).toString());
     }

@@ -89,16 +89,40 @@ public final class Installer {
         }
     }
 
-    /** 释放某库 toolkit 到 baseDir/<dbId>/toolkit/<file>（jar 或目录），并解压附加实现目录（如 mysql 的 naganpm）。 */
+    /** 释放某库 toolkit 到 baseDir/<dbId>/toolkit/<file>（jar 或目录），并解压附加实现目录（如 mysql 的 naganpm）。
+     *  幂等：目标已就绪（非空文件或非空目录）则跳过，避免每次"添加数据源"都重复解压数千个 node_modules 文件（杀软逐个扫描，耗时分钟级）。 */
     public static void deployToolkit(Path baseDir, String dbId, DbAdapter adapter) throws IOException {
         Path dest = toolkitPath(baseDir, dbId, adapter);
-        String res = "toolkit/" + dbId + "/" + adapter.toolkitFileName();
-        extractOrCopy(null, res, dest);
-        for (String extra : adapter.extraToolkitDirResources()) {
-            // extra 形如 toolkit/mysql/mysql-naga-mcp-server，解压到 baseDir/<dbId>/toolkit/<basename>
-            Path extraDest = dbDir(baseDir, dbId).resolve("toolkit").resolve(extra.substring(extra.lastIndexOf('/') + 1));
-            extractOrCopy(null, extra, extraDest);
+        String srcDb = adapter.toolkitSourceDbId();
+        String res = "toolkit/" + srcDb + "/" + adapter.toolkitFileName();
+        if (!isDeployed(dest)) {
+            extractOrCopy(null, res, dest);
         }
+        for (String extra : adapter.extraToolkitDirResources()) {
+            Path extraDest = dbDir(baseDir, dbId).resolve("toolkit").resolve(extra.substring(extra.lastIndexOf('/') + 1));
+            if (!isDeployed(extraDest)) {
+                extractOrCopy(null, extra, extraDest);
+            }
+        }
+    }
+
+    /** 目标是否已就绪：非空普通文件，或非空目录（目录型 toolkit 如 mysql 的 node_modules）。 */
+    public static boolean isDeployed(Path target) {
+        if (Files.isRegularFile(target)) {
+            try {
+                return Files.size(target) > 0;
+            } catch (IOException e) {
+                return false;
+            }
+        }
+        if (Files.isDirectory(target)) {
+            try (java.util.stream.Stream<Path> s = Files.list(target)) {
+                return s.findFirst().isPresent();
+            } catch (IOException e) {
+                return false;
+            }
+        }
+        return false;
     }
 
     /** 释放某库服务端运行时（如 mysql 的 node）到 baseDir/<dbId>/runtime/<name>。 */
@@ -107,7 +131,7 @@ public final class Installer {
         if (Files.isRegularFile(dest) || Files.isRegularFile(dest.resolve("node.exe")) || Files.isRegularFile(dest.resolve("node"))) {
             return;
         }
-        String res = "runtime/" + dbId + "/node";
+        String res = "runtime/" + adapter.runtimeSourceDbId() + "/node";
         extractOrCopy(null, res, dest);
     }
 
@@ -126,17 +150,16 @@ public final class Installer {
     }
 
     /**
-     * 共享连接配置文件（方案 B：连接要素仅落盘一份，位于 instance/&lt;env&gt;/ 下）。
-     * 文件名直接沿用适配器声明（Oracle → config.yaml，MySQL → .env），
-     * 与历史布局一致，升级后旧实例无需重建。
+     * 每实现（provider）专属连接配置文件，位于 instance/&lt;env&gt;/&lt;mcpServer&gt;/ 下。
+     * 文件名直接沿用适配器声明（Oracle → config.yaml，MySQL → .env）。
      */
-    public static Path connectionFile(Path baseDir, String dbId, String env, DbAdapter adapter) {
-        return envDir(baseDir, dbId, env).resolve(adapter.configFileName());
+    public static Path connectionFile(Path baseDir, String dbId, String env, String mcpServer, DbAdapter adapter) {
+        return providerDir(baseDir, dbId, env, mcpServer).resolve(adapter.configFileName());
     }
 
-    /** 兼容别名：Oracle -DconfigFile 指向共享连接文件。 */
-    public static Path configFile(Path baseDir, String dbId, String env, DbAdapter adapter) {
-        return connectionFile(baseDir, dbId, env, adapter);
+    /** 兼容别名：Oracle -DconfigFile 指向该实现专属连接文件。 */
+    public static Path configFile(Path baseDir, String dbId, String env, String mcpServer, DbAdapter adapter) {
+        return connectionFile(baseDir, dbId, env, mcpServer, adapter);
     }
 
     /** 某实现（provider）专属目录：instance/<env>/<mcpServer>/（仅存该实现的 calllog）。 */
@@ -356,17 +379,15 @@ public final class Installer {
         return env != null && env.matches("^[a-z][a-z0-9-]{0,31}$");
     }
 
-    /** 生成共享连接配置 + 确保该实现目录存在。密码仅本地落盘一份；adapter 决定文件名与内容。 */
+    /** 生成该实现专属连接配置 + 确保该实现目录存在。密码仅本地落盘一份；adapter 决定文件名与内容。 */
     public static void writeEnvConfig(Path baseDir, String dbId, String env, String mcpServer, DbAdapter adapter,
                                       String url, String user, String password) throws IOException {
-        Path dir = envDir(baseDir, dbId, env);
+        Path dir = providerDir(baseDir, dbId, env, mcpServer);
         Files.createDirectories(dir);
         String content = adapter.renderConfig(env, url, user, password);
-        Path file = connectionFile(baseDir, dbId, env, adapter);
+        Path file = connectionFile(baseDir, dbId, env, mcpServer, adapter);
         Files.writeString(file, content, StandardCharsets.UTF_8);
         chmod600IfPosix(file);
-        // 该实现专属目录（仅承载 calllog），提前创建避免自检首次写日志时竞态
-        Files.createDirectories(providerDir(baseDir, dbId, env, mcpServer));
     }
 
     private static void chmod600IfPosix(Path f) {
