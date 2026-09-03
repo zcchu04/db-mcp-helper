@@ -1,237 +1,391 @@
-name: Build and Package
-
-# 三平台产物均为 Tauri 桌面壳（内嵌 WebView 加载 Java 后端 http://127.0.0.1:8765）。
-# Java 侧 jlink runtime + fat jar 被 stage 到 shell/bundle/，作为 Tauri resources 打进安装包。
-# Windows: NSIS .exe；macOS: .dmg（未签名，用户需右键打开）；Linux: .deb + .AppImage。
+name: Build & Release
 
 on:
   push:
-    branches: [main]
+    branches: [main, v0.3]
     tags: ['v*']
   pull_request:
-    branches: [main]
+    branches: [main, v0.3]
   workflow_dispatch:
+    inputs:
+      toolkit_jar_url:
+        description: 'URL to oracle-db-mcp-toolkit JAR (optional, falls back to local build/cache)'
+        required: false
+        default: ''
+      mysql_toolkit_url:
+        description: 'URL to MySQL toolkit archive (optional)'
+        required: false
+        default: ''
+
+env:
+  APP_NAME: DB MCP Helper
+  APP_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '0.3.0-dev' }}
 
 jobs:
-  build:
-    name: Build (${{ matrix.label }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - label: Windows
-            os: windows-latest
-            bundles: nsis
-          - label: macOS
-            os: macos-latest
-            bundles: dmg
-          - label: Linux
-            os: ubuntu-24.04
-            bundles: deb
-    runs-on: ${{ matrix.os }}
-    permissions:
-      contents: read
+  # ─── Build core Java modules (mcp-tap + setup-app) ───
+  build-core:
+    runs-on: windows-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+          cache: maven
 
-      - name: Set up Node 20
-        uses: actions/setup-node@v4
+      - name: Build mcp-tap
+        run: mvn package -DskipTests -q -pl mcp-tap
+
+      - name: Build setup-app (slim — no embedded resources)
+        run: mvn package -DskipTests -q -pl setup-app
+
+      - name: Package slim zip
+        shell: pwsh
+        run: |
+          $version = "${{ env.APP_VERSION }}" -replace '^v',''
+          $slimDir = "dist/slim-staging"
+          New-Item -ItemType Directory -Force -Path $slimDir | Out-Null
+
+          Copy-Item "setup-app/target/db-mcp-setup.jar" "$slimDir/"
+          Copy-Item "mcp-tap/target/mcp-tap.jar" "$slimDir/tap/"
+
+          # manifest.json
+          @{
+            type = "slim"
+            version = $version
+            helperVersion = $version
+            platform = "win-x64"
+            createdAt = (Get-Date -Format "o")
+          } | ConvertTo-Json | Set-Content "$slimDir/manifest.json" -Encoding UTF8
+
+          Compress-Archive -Path "$slimDir/*" -DestinationPath "dist/db-mcp-helper-slim-win-x64-$version.zip"
+          Write-Host "[OK] slim package created"
+
+      - name: Upload core artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-jars
+          path: |
+            setup-app/target/db-mcp-setup.jar
+            mcp-tap/target/mcp-tap.jar
+          retention-days: 7
+
+      - name: Upload slim package
+        uses: actions/upload-artifact@v4
+        with:
+          name: slim-package
+          path: dist/db-mcp-helper-slim-*.zip
+          retention-days: 30
+
+  # ─── Build jlink JRE runtime ───
+  build-runtime:
+    runs-on: windows-latest
+    needs: build-core
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Download core JARs
+        uses: actions/download-artifact@v4
+        with:
+          name: core-jars
+
+      - name: jlink JRE
+        shell: pwsh
+        run: |
+          # Use the fat JAR (downloaded to workspace root by upload/download-artifact)
+          $fatJar = "db-mcp-setup.jar"
+          $mods = (cmd /c "jdeps --ignore-missing-deps --print-module-deps `"$fatJar`" 2>&1") | Where-Object { $_ -notmatch "^WARNING:" }
+          $full = @(
+            "java.base", "java.logging", "java.xml", "java.desktop",
+            "java.instrument", "java.management", "java.naming", "java.net.http",
+            "java.rmi", "java.sql", "jdk.net", "jdk.security.jgss",
+            "jdk.httpserver"
+          )
+          $all = (($full + ($mods -split ",")) | Sort-Object -Unique | Where-Object { $_.Trim() } | ForEach-Object { $_.Trim() }) -join ","
+
+          & jlink --add-modules $all --output "dist/runtime" `
+            --strip-debug --no-header-files --no-man-pages --compress 2
+          if ($LASTEXITCODE -ne 0) { throw "jlink failed" }
+
+      - name: Package JRE runtime zip
+        shell: pwsh
+        run: |
+          $version = "${{ env.APP_VERSION }}" -replace '^v',''
+          $rtDir = "dist/runtime-staging"
+          New-Item -ItemType Directory -Force -Path $rtDir | Out-Null
+
+          Copy-Item "dist/runtime" "$rtDir/runtime" -Recurse
+
+          @{
+            type = "runtime-jre"
+            version = $version
+            helperVersion = $version
+            platform = "win-x64"
+            runtimeKind = "JAVA_JAR"
+            createdAt = (Get-Date -Format "o")
+          } | ConvertTo-Json | Set-Content "$rtDir/manifest.json" -Encoding UTF8
+
+          Compress-Archive -Path "$rtDir/*" -DestinationPath "dist/db-mcp-runtime-jre-win-x64-$version.zip"
+          Write-Host "[OK] JRE runtime package created"
+
+      - name: Upload JRE runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-jre
+          path: dist/db-mcp-runtime-jre-*.zip
+          retention-days: 30
+
+      - name: Upload raw runtime dir (for assemble)
+        uses: actions/upload-artifact@v4
+        with:
+          name: jre-runtime-dir
+          path: dist/runtime/
+          retention-days: 3
+
+  # ─── Package implementation zips ───
+  build-impls:
+    runs-on: windows-latest
+    needs: build-core
+    strategy:
+      matrix:
+        include:
+          - db: oracle
+            serverId: builtin-toolkit
+            jarPattern: "oracle-db-mcp-toolkit-*.jar"
+            runtimeKind: JAVA_JAR
+            entryFile: oracle-db-mcp-toolkit.jar
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve toolkit JAR
+        shell: pwsh
+        run: |
+          $jar = $null
+          $candidates = @(
+            "oracle-mcp-src/src/oracle-db-mcp-java-toolkit/target/oracle-db-mcp-toolkit-1.0.0.jar",
+            "$env:USERPROFILE/.qoderwork/mcp/oracle-db-mcp/oracle-db-mcp-toolkit-1.0.0.jar"
+          )
+          foreach ($c in $candidates) {
+            if (Test-Path $c) { $jar = $c; break }
+          }
+          if (-not $jar) {
+            Write-Host "[WARN] Oracle toolkit JAR not found; impl package will be skipped"
+            "SKIP=true" | Out-File $env:GITHUB_ENV
+            return
+          }
+          "TOOLKIT_JAR=$jar" | Out-File $env:GITHUB_ENV
+          Write-Host "[OK] Using toolkit: $jar"
+
+      - name: Package Oracle impl zip
+        if: env.SKIP != 'true'
+        shell: pwsh
+        run: |
+          $version = "${{ env.APP_VERSION }}" -replace '^v',''
+          $implDir = "dist/impl-oracle-staging"
+          New-Item -ItemType Directory -Force -Path "$implDir/builtin-toolkit" | Out-Null
+
+          Copy-Item $env:TOOLKIT_JAR "$implDir/builtin-toolkit/oracle-db-mcp-toolkit.jar"
+
+          @{
+            type = "impl-oracle-toolkit"
+            version = "1.0.0"
+            helperVersion = $version
+            platform = "any"
+            runtimeKind = "JAVA_JAR"
+            dbId = "oracle"
+            serverId = "builtin-toolkit"
+            entryFile = "oracle-db-mcp-toolkit.jar"
+            createdAt = (Get-Date -Format "o")
+          } | ConvertTo-Json | Set-Content "$implDir/manifest.json" -Encoding UTF8
+
+          Compress-Archive -Path "$implDir/*" -DestinationPath "dist/db-mcp-impl-oracle-toolkit-$version.zip"
+          Write-Host "[OK] Oracle impl package created"
+
+      - name: Upload Oracle impl
+        if: env.SKIP != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: impl-oracle
+          path: dist/db-mcp-impl-oracle-*.zip
+          retention-days: 30
+
+  # ─── Assemble full package (core + impls + runtimes) ───
+  assemble:
+    runs-on: windows-latest
+    needs: [build-core, build-runtime, build-impls]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/artifacts
+
+      - name: Assemble full package
+        shell: pwsh
+        run: |
+          $version = "${{ env.APP_VERSION }}" -replace '^v',''
+          $fullDir = "dist/full-staging"
+          New-Item -ItemType Directory -Force -Path $fullDir | Out-Null
+
+          # Core: setup-app jar + tap jar
+          $coreDir = "dist/artifacts/core-jars"
+          if (Test-Path $coreDir) {
+            Copy-Item "$coreDir/db-mcp-setup.jar" $fullDir
+            New-Item -ItemType Directory -Force -Path "$fullDir/tap" | Out-Null
+            Copy-Item "$coreDir/mcp-tap.jar" "$fullDir/tap/"
+          }
+
+          # JRE runtime
+          $rtDir = "dist/artifacts/jre-runtime-dir"
+          if (Test-Path $rtDir) {
+            New-Item -ItemType Directory -Force -Path "$fullDir/runtime" | Out-Null
+            Copy-Item "$rtDir/*" "$fullDir/runtime/" -Recurse -Force
+          }
+
+          # Implementation: extract impl zips into impls/
+          $implZips = Get-ChildItem "dist/artifacts" -Recurse -Filter "db-mcp-impl-*.zip"
+          if ($implZips) {
+            foreach ($z in $implZips) {
+              $tmp = "dist/tmp-extract-$($z.BaseName)"
+              Expand-Archive -Path $z.FullName -DestinationPath $tmp -Force
+              # Each impl zip has subdirs like builtin-toolkit/
+              $manifest = Get-Content "$tmp/manifest.json" -Raw | ConvertFrom-Json
+              $dbId = $manifest.dbId
+              $serverId = $manifest.serverId
+              $destDir = "$fullDir/impls/$dbId/$serverId"
+              New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+              $srcContent = Get-ChildItem $tmp | Where-Object { $_.Name -ne "manifest.json" }
+              foreach ($item in $srcContent) {
+                Copy-Item $item.FullName $destDir -Recurse -Force
+              }
+              Remove-Item $tmp -Recurse -Force
+            }
+          }
+
+          # manifest.json for full package
+          @{
+            type = "full"
+            version = $version
+            helperVersion = $version
+            platform = "win-x64"
+            includes = @("core", "impls", "runtime-jre")
+            createdAt = (Get-Date -Format "o")
+          } | ConvertTo-Json | Set-Content "$fullDir/manifest.json" -Encoding UTF8
+
+          Compress-Archive -Path "$fullDir/*" -DestinationPath "dist/db-mcp-helper-full-win-x64-$version.zip"
+          Write-Host "[OK] full package created"
+
+      - name: Upload full package
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-package
+          path: dist/db-mcp-helper-full-*.zip
+          retention-days: 30
+
+  # ─── Desktop installer (Tauri, Windows only for now) ───
+  desktop:
+    runs-on: windows-latest
+    needs: [build-core, build-runtime]
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Set up Rust (stable)
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Rust build cache
+      - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: shell/src-tauri
 
-      - name: Install Linux system deps (webkit2gtk 4.1 + tauri toolchain)
-        if: runner.os == 'Linux'
-        run: |
-          set -e
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            build-essential curl wget file \
-            libxdo-dev libssl-dev \
-            libayatana-appindicator3-dev librsvg2-dev \
-            patchelf \
-            libfuse2t64
-
-      # ---- 构建 Java 后端依赖：oracle-db-mcp-toolkit + mcp-tap ----
-      - name: Checkout oracle/mcp (sparse)
-        uses: actions/checkout@v4
+      - name: Download core JARs
+        uses: actions/download-artifact@v4
         with:
-          repository: oracle/mcp
-          path: oracle-mcp-src
-          sparse-checkout: src/oracle-db-mcp-java-toolkit
+          name: core-jars
 
-      - name: Build oracle-db-mcp-toolkit
-        shell: bash
+      - name: Download JRE runtime
+        uses: actions/download-artifact@v4
+        with:
+          name: jre-runtime-dir
+          path: dist/runtime
+
+      - name: Stage Tauri bundle
+        shell: pwsh
         run: |
-          set -e
-          cd oracle-mcp-src/src/oracle-db-mcp-java-toolkit
-          mvn clean package -DskipTests -q
-          ls -lh target/
+          $bundle = "shell/bundle"
+          New-Item -ItemType Directory -Force -Path $bundle | Out-Null
+          Copy-Item "db-mcp-setup.jar" "$bundle/db-mcp-setup.jar"
+          if (Test-Path "dist/runtime") {
+            Copy-Item "dist/runtime" "$bundle/runtime" -Recurse -Force
+            Write-Host "[OK] Bundled JRE staged"
+          }
 
-      - name: Build mcp-tap
-        shell: bash
-        run: mvn package -DskipTests -q -pl mcp-tap
-
-      # ---- jlink 统一运行时（Tauri resources 里的 bundle/runtime 兜底 JDK） ----
-      # 模块集必须含 jdk.httpserver（SetupMain 用 com.sun.net.httpserver）。
-      - name: jlink unified runtime
-        shell: bash
+      - name: Build Tauri installer
+        shell: pwsh
         run: |
-          set -e
-          TOOLKIT=oracle-mcp-src/src/oracle-db-mcp-java-toolkit/target/oracle-db-mcp-toolkit-1.0.0.jar
-          MODS=$(jdeps --ignore-missing-deps --print-module-deps "$TOOLKIT")
-          FULL="java.base,java.logging,java.xml,java.desktop,java.instrument,java.management,java.naming,java.net.http,java.rmi,java.sql,jdk.net,jdk.security.jgss,jdk.httpserver"
-          ALL=$(printf "%s,%s" "$FULL" "$MODS" | tr ',' '\n' | sort -u | tr '\n' ',' | sed 's/,$//')
-          echo "Modules: $ALL"
-          rm -rf dist/runtime dist/runtime.zip
-          jlink --add-modules "$ALL" --output dist/runtime \
-            --strip-debug --no-header-files --no-man-pages --compress 2
-          du -sh dist/runtime
-          # stage-resources.sh 要求 dist/runtime.zip（内嵌到 fat jar 里给 Installer.deployRuntime 释放用），
-          # dist/runtime 目录本身也保留，稍后 Tauri 打包会直接把它 stage 到 shell/bundle/runtime 作运行时兜底。
-          (cd dist && if [ "${{ runner.os }}" = "Windows" ]; then
-             powershell -Command "Compress-Archive -Path runtime -DestinationPath runtime.zip -Force"
-           else
-             zip -qr runtime.zip runtime
-           fi)
-          ls -lh dist/
+          Push-Location shell
+          npm install
+          npm run tauri build
+          Pop-Location
 
-      # ---- 资源内嵌 + 构建 setup-app fat jar ----
-      - name: Stage resources
-        shell: bash
-        run: |
-          export TOOLKIT_SRC="$(pwd)/oracle-mcp-src/src/oracle-db-mcp-java-toolkit/target/oracle-db-mcp-toolkit-1.0.0.jar"
-          chmod +x stage-resources.sh
-          ./stage-resources.sh
-
-      - name: Build setup-app (fat jar)
-        shell: bash
-        run: mvn package -DskipTests -q -pl setup-app
-
-      # ---- Tauri 打包：stage bundle → npm install → 生成图标 → tauri build ----
-      - name: Stage Tauri bundle (jar + jlink runtime)
-        shell: bash
-        run: |
-          set -e
-          rm -rf shell/bundle
-          mkdir -p shell/bundle
-          cp setup-app/target/db-mcp-setup.jar shell/bundle/db-mcp-setup.jar
-          cp -r dist/runtime shell/bundle/runtime
-          echo "--- shell/bundle layout ---"
-          ls -lh shell/bundle/
-          du -sh shell/bundle shell/bundle/runtime
-
-      - name: Install shell npm deps
-        working-directory: shell
-        shell: bash
-        run: npm install --no-audit --no-fund
-
-      - name: Generate Tauri icon set (all platforms)
-        working-directory: shell
-        shell: bash
-        # 从唯一源图 icon.png 生成 32x32.png / 128x128.png / 128x128@2x.png / icon.icns / icon.ico
-        # （Linux deb 需要 32x32+128x128；macOS dmg 需要 .icns；Windows NSIS 需要 .ico）
-        run: npx tauri icon src-tauri/icons/icon.png
-
-      - name: Tauri build
-        working-directory: shell
-        shell: bash
-        env:
-          # 让 linuxdeploy / appimagetool 用「解压 + 运行」模式，规避 AppImage FUSE 挂载限制
-          APPIMAGE_EXTRACT_AND_RUN: "1"
-        run: npx tauri build --bundles "${{ matrix.bundles }}"
-
-      - name: List bundle output
-        shell: bash
-        run: find shell/src-tauri/target/release/bundle -maxdepth 3 -type f | sort
-
-      - name: Upload Windows artifact (Tauri NSIS .exe)
-        if: runner.os == 'Windows'
+      - name: Upload Tauri installer
         uses: actions/upload-artifact@v4
         with:
-          name: DB-MCP-Helper-Windows
-          path: shell/src-tauri/target/release/bundle/nsis/*.exe
-          if-no-files-found: error
+          name: desktop-installer
+          path: shell/src-tauri/target/release/bundle/**/*.exe
+          retention-days: 30
 
-      - name: Upload macOS artifact (Tauri DMG)
-        if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
-        with:
-          name: DB-MCP-Helper-macOS
-          path: shell/src-tauri/target/release/bundle/dmg/*.dmg
-          if-no-files-found: error
-
-      - name: Upload Linux artifact (Tauri .deb)
-        if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
-        with:
-          name: DB-MCP-Helper-Linux
-          path: shell/src-tauri/target/release/bundle/deb/*.deb
-          if-no-files-found: error
-
-  # ---- 创建 Release（仅 tag 推送时触发） ----
+  # ─── GitHub Release (tags only) ───
   release:
-    name: Create Release
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    needs: [assemble, build-impls, build-runtime, desktop]
+    if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
     steps:
-      - name: Download all artifacts
+      - uses: actions/checkout@v4
+
+      - name: Download all release artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          path: dist/release
 
-      - name: Flatten artifacts
-        shell: bash
+      - name: Flatten artifact layout
         run: |
-          mkdir -p release-files
-          find artifacts -type f \( -name "*.exe" -o -name "*.dmg" -o -name "*.deb" \) -exec cp {} release-files/ \;
-          ls -lh release-files/
+          mkdir -p dist/upload
+          find dist/release -type f \( -name "*.zip" -o -name "*.exe" -o -name "*.msi" -o -name "*.dmg" -o -name "*.deb" \) \
+            -exec cp {} dist/upload/ \;
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
+      - name: Generate checksums.txt
+        run: |
+          cd dist/upload
+          sha256sum * > checksums.txt
+          cat checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: DB MCP Helper ${{ github.ref_name }}
-          body: |
-            ## DB MCP Helper ${{ github.ref_name }}
-
-            多数据库 MCP 可视化安装器（Oracle + MySQL）三平台安装包，Tauri 桌面壳内嵌 WebView 向导，不再弹系统浏览器。
-
-            - **Windows**: `DB MCP Helper_*_x64-setup.exe`（Tauri NSIS）
-            - **macOS**: `DB MCP Helper_*.dmg`（未签名，首次打开需右键 → 打开）
-            - **Linux**: `db-mcp-helper_*.deb`
-
-            ### 安装说明
-
-            - **Windows**: 双击 `.exe`，向导可选安装目录；桌面快捷方式启动 Tauri 壳
-            - **macOS**: 拖入 Applications；未做 Developer ID 签名，首次需在 Finder 右键 → 打开
-            - **Linux**: `sudo apt install ./db-mcp-helper_*.deb` 或 `sudo dpkg -i`
-
-            ### 首次使用
-
-            1. 启动 Tauri 壳（自动 spawn Java 后端 `db-mcp-setup.jar --no-browser`）
-            2. WebView 打开部署向导（http://127.0.0.1:8765）
-            3. 添加数据库环境（支持粘贴 Spring 配置片段）→ 自检 → 注册到 AI 平台
+          draft: true
+          generate_release_notes: true
           files: |
-            release-files/*
-          draft: false
-          prerelease: false
+            dist/upload/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

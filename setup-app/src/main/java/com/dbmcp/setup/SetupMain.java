@@ -41,6 +41,8 @@ public final class SetupMain {
     static { RUNNING_MARKER.detail = "running"; }
     /** 旧磁盘布局迁移只跑一次（进程内）。 */
     private static volatile boolean LAYOUT_MIGRATED = false;
+    /** impls.json 首次推断只跑一次（进程内）。 */
+    private static volatile boolean IMPLS_INFERRED = false;
 
     static boolean NO_BROWSER = false;
 
@@ -210,6 +212,16 @@ public final class SetupMain {
     }
 
     private static JsonObject route(String path, JsonObject body, URI uri, String method) throws IOException {
+        // 实现管理 API（路径含参数，不适合 switch 精确匹配）
+        if (path.startsWith("/api/impls")) {
+            return routeImpls(path, body, method);
+        }
+        if (path.startsWith("/api/releases")) {
+            return routeReleases(path, body, uri, method);
+        }
+        if (path.startsWith("/api/runtimes")) {
+            return routeRuntimes(path, body, uri, method);
+        }
         switch (path) {
             case "/api/detect":
                 return ok(detect());
@@ -327,6 +339,11 @@ public final class SetupMain {
 
     private static JsonObject detect() {
         Path root = resolveRoot(null);
+        // v0.2 → v0.3 目录布局迁移（共享运行时、实现目录）；仅首次启动执行
+        try {
+            Migrator.migrateV3(root);
+        } catch (Exception ignored) {
+        }
         State st = State.load(root);
         // 旧布局（instance/<env>/calllog.jsonl）→ 方案 B（instance/<env>/<mcpServer>/calllog.jsonl），仅执行一次
         if (st != null && !LAYOUT_MIGRATED) {
@@ -334,6 +351,16 @@ public final class SetupMain {
             try {
                 Installer.migrateProviderLayout(root, st.envs);
             } catch (RuntimeException ignored) {
+            }
+        }
+        // 首次启动时从磁盘推断 impls.json（已部署的 toolkit → 注册记录），仅执行一次
+        if (!IMPLS_INFERRED) {
+            IMPLS_INFERRED = true;
+            try {
+                ImplRegistry reg = ImplRegistry.load(root);
+                reg.inferFromDisk();
+                reg.save();
+            } catch (Exception ignored) {
             }
         }
         JsonObject d = new JsonObject();
@@ -374,7 +401,7 @@ public final class SetupMain {
             Path tk = Installer.toolkitPath(root, a.id(), a);
             boolean ready = Installer.isDeployed(tk);
             if (a.runtimeKind() == DbAdapter.RuntimeKind.NODE) {
-                Path node = root.resolve(a.id()).resolve(Installer.RUNTIME_DIR_NAME).resolve("node");
+                Path node = root.resolve(Installer.RUNTIMES_DIR).resolve("node");
                 ready = ready && (Files.isRegularFile(node)
                         || Files.isRegularFile(node.resolve("node.exe"))
                         || Files.isRegularFile(node.resolve("node")));
@@ -383,6 +410,20 @@ public final class SetupMain {
             runtimeReady.addProperty(a.id(), ready);
         }
         d.add("runtimeReady", runtimeReady);
+        // 实现注册表（impls.json）：前端「MCP 服务实现」页展示各实现的版本/来源/bak 版本数
+        try {
+            ImplRegistry reg = ImplRegistry.load(root);
+            JsonObject implsJson = new JsonObject();
+            for (Map.Entry<String, Map<String, ImplInfo>> dbEntry : reg.listAll().entrySet()) {
+                JsonObject dbObj = new JsonObject();
+                for (Map.Entry<String, ImplInfo> srvEntry : dbEntry.getValue().entrySet()) {
+                    dbObj.add(srvEntry.getKey(), GSON.toJsonTree(srvEntry.getValue()));
+                }
+                implsJson.add(dbEntry.getKey(), dbObj);
+            }
+            d.add("impls", implsJson);
+        } catch (Exception ignored) {
+        }
         // 所有客户端（本机平台 + 各 McpTarget）的 mcp.json 配置路径，供系统页统一展示。
         JsonArray clientPaths = new JsonArray();
         clientPaths.add(clientPathJson("QoderWork", Cfg.mcpJsonPath()));
@@ -441,6 +482,22 @@ public final class SetupMain {
         validateInstallRoot(root);
         State st = Installer.deploy(root, dbId, adapter);
         Cfg.writeLastRoot(root);
+        // 部署完成后注册到 impls.json
+        try {
+            ImplRegistry reg = ImplRegistry.load(root);
+            String serverId = adapter.defaultMcpServer();
+            if (reg.get(dbId, serverId) == null) {
+                ImplInfo info = new ImplInfo();
+                info.version = "builtin";
+                info.source = "builtin";
+                info.installedAt = Instant.now().toString();
+                info.runtimeKind = adapter.runtimeKind().name();
+                info.entryFile = adapter.toolkitFileName();
+                reg.register(dbId, serverId, info);
+                reg.save();
+            }
+        } catch (Exception ignored) {
+        }
         JsonObject d = new JsonObject();
         d.addProperty("root", root.toString());
         d.addProperty("dbId", dbId);
@@ -1031,6 +1088,324 @@ public final class SetupMain {
         if (reg != null) d.addProperty("register", reg);
         if (unreg != null) d.addProperty("unregister", unreg);
         return d;
+    }
+
+    // ---------- impls（实现管理） ----------
+
+    /**
+     * 实现管理 API 路由（路径含参数）。
+     * <pre>
+     * GET  /api/impls                                  → 列出全部实现
+     * GET  /api/impls/{dbId}/{serverId}/bak-versions    → 列出可回滚版本
+     * POST /api/impls/{dbId}/{serverId}/rollback        → 从最近 bak 恢复
+     * </pre>
+     */
+    private static JsonObject routeImpls(String path, JsonObject body, String method) throws IOException {
+        // /api/impls → 列出全部
+        if ("/api/impls".equals(path)) {
+            return ok(implsList());
+        }
+        // 解析 /api/impls/{dbId}/{serverId}/{action}
+        String[] segs = path.substring("/api/impls/".length()).split("/");
+        if (segs.length < 2) {
+            return err("路径不合法：" + path);
+        }
+        String dbId = segs[0];
+        String serverId = segs[1];
+        String action = segs.length > 2 ? segs[2] : "";
+        if ("bak-versions".equals(action) && "GET".equals(method)) {
+            return ok(implsBakVersions(dbId, serverId));
+        }
+        if ("rollback".equals(action) && "POST".equals(method)) {
+            return ok(implsRollback(dbId, serverId));
+        }
+        if ("upload".equals(action) && "POST".equals(method)) {
+            ACTIVE_TASKS.incrementAndGet();
+            try {
+                return ok(implsUpload(dbId, serverId, body));
+            } finally {
+                ACTIVE_TASKS.decrementAndGet();
+            }
+        }
+        if ("install-url".equals(action) && "POST".equals(method)) {
+            ACTIVE_TASKS.incrementAndGet();
+            try {
+                return ok(implsInstallFromUrl(dbId, serverId, body));
+            } finally {
+                ACTIVE_TASKS.decrementAndGet();
+            }
+        }
+        return err("未知实现管理接口：" + path);
+    }
+
+    private static JsonObject implsList() {
+        Path root = resolveRoot(null);
+        ImplRegistry reg = ImplRegistry.load(root);
+        JsonObject d = new JsonObject();
+        for (Map.Entry<String, Map<String, ImplInfo>> dbEntry : reg.listAll().entrySet()) {
+            JsonObject dbObj = new JsonObject();
+            for (Map.Entry<String, ImplInfo> srvEntry : dbEntry.getValue().entrySet()) {
+                dbObj.add(srvEntry.getKey(), GSON.toJsonTree(srvEntry.getValue()));
+            }
+            d.add(dbEntry.getKey(), dbObj);
+        }
+        return d;
+    }
+
+    private static JsonObject implsBakVersions(String dbId, String serverId) {
+        Path root = requireRoot();
+        ImplRegistry reg = ImplRegistry.load(root);
+        List<ImplInfo.BakVersion> versions = reg.listBakVersions(dbId, serverId);
+        JsonObject d = new JsonObject();
+        d.addProperty("dbId", dbId);
+        d.addProperty("serverId", serverId);
+        JsonArray arr = new JsonArray();
+        for (ImplInfo.BakVersion bv : versions) {
+            arr.add(GSON.toJsonTree(bv));
+        }
+        d.add("versions", arr);
+        return d;
+    }
+
+    private static JsonObject implsRollback(String dbId, String serverId) throws IOException {
+        Path root = requireRoot();
+        ImplRegistry reg = ImplRegistry.load(root);
+        boolean restored = reg.restoreBak(dbId, serverId);
+        JsonObject d = new JsonObject();
+        d.addProperty("dbId", dbId);
+        d.addProperty("serverId", serverId);
+        d.addProperty("restored", restored);
+        if (!restored) {
+            d.addProperty("message", "无可回滚的历史版本");
+        }
+        return d;
+    }
+
+    private static JsonObject implsUpload(String dbId, String serverId, JsonObject body) throws IOException {
+        Path root = requireRoot();
+        DbAdapter adapter = DbAdapters.require(dbId);
+        String zipBase64 = str(body, "zipBase64");
+        if (zipBase64 == null || zipBase64.isBlank()) {
+            return err("缺少 zipBase64 参数");
+        }
+        String version = str(body, "version");
+        if (version == null || version.isBlank()) {
+            version = "uploaded";
+        }
+
+        ImplRegistry reg = ImplRegistry.load(root);
+        Path dir = ImplRegistry.implDir(root, dbId, serverId);
+
+        reg.bakImpl(dbId, serverId);
+
+        byte[] zipBytes = java.util.Base64.getDecoder().decode(zipBase64);
+        Path tmpDir = Files.createTempDirectory("impl-upload-");
+        try {
+            extractZip(zipBytes, tmpDir);
+            ImplRegistry.deleteTree(dir);
+            Files.createDirectories(dir.getParent());
+
+            try (var stream = Files.list(tmpDir)) {
+                List<Path> entries = stream.toList();
+                if (entries.size() == 1 && Files.isRegularFile(entries.get(0))) {
+                    Files.copy(entries.get(0), dir, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                } else {
+                    ImplRegistry.copyTree(tmpDir, dir);
+                }
+            }
+
+            ImplInfo info = reg.get(dbId, serverId);
+            if (info == null) {
+                info = new ImplInfo();
+            }
+            info.version = version;
+            info.source = "uploaded";
+            info.installedAt = Instant.now().toString();
+            info.runtimeKind = adapter.runtimeKind().name();
+            info.entryFile = resolveUploadedEntryFile(adapter, dir);
+            reg.register(dbId, serverId, info);
+            reg.save();
+
+            JsonObject d = new JsonObject();
+            d.addProperty("dbId", dbId);
+            d.addProperty("serverId", serverId);
+            d.addProperty("version", version);
+            d.addProperty("source", "uploaded");
+            return d;
+        } finally {
+            ImplRegistry.deleteTree(tmpDir);
+        }
+    }
+
+    private static JsonObject implsInstallFromUrl(String dbId, String serverId, JsonObject body) throws IOException {
+        Path root = requireRoot();
+        String url = str(body, "url");
+        if (url == null || url.isBlank()) {
+            return err("缺少 url 参数");
+        }
+        String version = str(body, "version");
+        try {
+            return ArtifactDownloader.installFromUrl(dbId, serverId, url, version, root);
+        } catch (IOException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IOException("安装失败: " + e.getMessage(), e);
+        }
+    }
+
+    private static String resolveUploadedEntryFile(DbAdapter adapter, Path dir) {
+        if (Files.isRegularFile(dir)) {
+            return dir.getFileName().toString();
+        }
+        if (adapter.runtimeKind() == DbAdapter.RuntimeKind.JAVA_JAR) {
+            return adapter.toolkitFileName();
+        }
+        if (Files.isDirectory(dir)) {
+            if (Files.isRegularFile(dir.resolve("build/index.js"))) return "build/index.js";
+            if (Files.isRegularFile(dir.resolve("dist/index.js"))) return "dist/index.js";
+            if (Files.isRegularFile(dir.resolve("index.js"))) return "index.js";
+        }
+        return adapter.toolkitFileName();
+    }
+
+    private static void extractZip(byte[] zipBytes, Path destDir) throws IOException {
+        try (java.util.zip.ZipInputStream zin = new java.util.zip.ZipInputStream(new java.io.ByteArrayInputStream(zipBytes))) {
+            java.util.zip.ZipEntry entry;
+            while ((entry = zin.getNextEntry()) != null) {
+                Path target = destDir.resolve(entry.getName()).normalize();
+                if (!target.startsWith(destDir)) {
+                    throw new IOException("zip 条目路径非法：" + entry.getName());
+                }
+                if (entry.isDirectory()) {
+                    Files.createDirectories(target);
+                } else {
+                    Files.createDirectories(target.getParent());
+                    Files.copy(zin, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                }
+                zin.closeEntry();
+            }
+        }
+    }
+
+    // ---------- releases（GitHub 产物） ----------
+
+    private static JsonObject routeReleases(String path, JsonObject body, URI uri, String method) {
+        if ("/api/releases/latest".equals(path) && "GET".equals(method)) {
+            try {
+                ArtifactDownloader.ReleaseInfo rel = ArtifactDownloader.fetchLatestRelease();
+                JsonObject d = new JsonObject();
+                d.addProperty("tagName", rel.tagName());
+                d.addProperty("name", rel.name());
+                d.addProperty("publishedAt", rel.publishedAt());
+                JsonArray arr = new JsonArray();
+                for (ArtifactDownloader.ArtifactEntry e : rel.artifacts()) {
+                    JsonObject o = new JsonObject();
+                    o.addProperty("name", e.name());
+                    o.addProperty("type", e.type());
+                    o.addProperty("platform", e.platform());
+                    o.addProperty("size", e.size());
+                    o.addProperty("downloadUrl", e.downloadUrl());
+                    o.addProperty("sha256", e.sha256());
+                    arr.add(o);
+                }
+                d.add("artifacts", arr);
+                return ok(d);
+            } catch (Exception e) {
+                return err("查询 GitHub Release 失败: " + e.getMessage());
+            }
+        }
+        if ("/api/releases/latest/artifacts".equals(path) && "GET".equals(method)) {
+            try {
+                ArtifactDownloader.ReleaseInfo rel = ArtifactDownloader.fetchLatestRelease();
+                String typeFilter = query(uri, "type");
+                String platformFilter = query(uri, "platform");
+                JsonArray arr = new JsonArray();
+                for (ArtifactDownloader.ArtifactEntry e : rel.artifacts()) {
+                    if (typeFilter != null && !typeFilter.isBlank() && !e.type().equals(typeFilter)) continue;
+                    if (platformFilter != null && !platformFilter.isBlank()
+                            && !e.platform().equals(platformFilter) && !"any".equals(e.platform())) continue;
+                    JsonObject o = new JsonObject();
+                    o.addProperty("name", e.name());
+                    o.addProperty("type", e.type());
+                    o.addProperty("platform", e.platform());
+                    o.addProperty("size", e.size());
+                    o.addProperty("downloadUrl", e.downloadUrl());
+                    arr.add(o);
+                }
+                JsonObject d = new JsonObject();
+                d.addProperty("tagName", rel.tagName());
+                d.add("artifacts", arr);
+                return ok(d);
+            } catch (Exception e) {
+                return err("查询 GitHub Release 失败: " + e.getMessage());
+            }
+        }
+        return err("未知 releases 接口：" + path);
+    }
+
+    // ---------- runtimes ----------
+
+    private static JsonObject routeRuntimes(String path, JsonObject body, URI uri, String method) throws IOException {
+        Path root = requireRoot();
+
+        if ("/api/runtimes".equals(path) && "GET".equals(method)) {
+            return ok(RuntimeManager.listRuntimes(root));
+        }
+
+        if (path.matches("/api/runtimes/(java|node)") && "GET".equals(method)) {
+            String kind = path.substring("/api/runtimes/".length());
+            return ok(RuntimeManager.getRuntime(root, kind));
+        }
+
+        if (path.matches("/api/runtimes/(java|node)/set-local") && "POST".equals(method)) {
+            String kind = path.replaceFirst("/api/runtimes/", "").replace("/set-local", "");
+            String p = str(body, "path");
+            if (p == null || p.isBlank()) {
+                return err("缺少 path 参数");
+            }
+            try {
+                return ok(RuntimeManager.setLocalRuntime(kind, Path.of(p)));
+            } catch (IOException e) {
+                return err(e.getMessage());
+            }
+        }
+
+        if (path.matches("/api/runtimes/(java|node)/reset") && "POST".equals(method)) {
+            String kind = path.replaceFirst("/api/runtimes/", "").replace("/reset", "");
+            try {
+                RuntimeManager.resetRuntimeOverride(kind);
+                JsonObject d = new JsonObject();
+                d.addProperty("ok", true);
+                d.addProperty("kind", kind);
+                return ok(d);
+            } catch (IOException e) {
+                return err(e.getMessage());
+            }
+        }
+
+        if (path.matches("/api/runtimes/(java|node)/check") && "GET".equals(method)) {
+            String kind = path.replaceFirst("/api/runtimes/", "").replace("/check", "");
+            String p = query(uri, "path");
+            if (p == null || p.isBlank()) {
+                return err("缺少 path 参数");
+            }
+            return ok(RuntimeManager.checkCompatibility(Path.of(p), kind));
+        }
+
+        if (path.matches("/api/runtimes/(java|node)/install") && "POST".equals(method)) {
+            String kind = path.replaceFirst("/api/runtimes/", "").replace("/install", "");
+            String url = str(body, "url");
+            if (url == null || url.isBlank()) {
+                return err("缺少 url 参数");
+            }
+            try {
+                return ok(RuntimeManager.installRuntimeFromUrl(kind, url, root));
+            } catch (Exception e) {
+                return err("安装运行时失败: " + e.getMessage());
+            }
+        }
+
+        return err("未知 runtimes 接口：" + path);
     }
 
     // ---------- skill ----------

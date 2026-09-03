@@ -12,22 +12,29 @@ import java.util.Map;
 /**
  * 部署与环境配置模块：释放共享 JAR/运行时、生成环境连接配置、维护目录结构。
  *
- * <p>目录结构（baseDir 默认 ~/.agent/mcp；安装形态即 {app}）：
+ * <p>目录结构（v0.3；baseDir 默认 ~/.agent/mcp；安装形态即 {app}）：
  * <pre>
  * baseDir/
- * ├── runtime/           共享 jlink JRE（驱动 mcp-tap 与 Oracle toolkit）
- * ├── tap/mcp-tap.jar    共享监听代理
+ * ├── runtimes/java/       共享 jlink JRE（驱动 mcp-tap 与 Oracle toolkit）
+ * ├── runtimes/node/       共享 Node（驱动 MySQL / Doris 等 NODE 实现）
+ * ├── impls/               各实现入口（impls.json + &lt;dbId&gt;/&lt;serverId&gt;/）
+ * ├── bak/                 实现历史备份
+ * ├── tap/mcp-tap.jar      共享监听代理
  * ├── state.json
- * └── &lt;dbId&gt;/           每数据库类型一个目录
- *     ├── toolkit/&lt;file&gt;
- *     ├── runtime/       （按需）该库服务端运行时
- *     └── instance/&lt;env&gt;/config.*
+ * └── &lt;dbId&gt;/instance/&lt;env&gt;/&lt;mcpServer&gt;/config.*
  * </pre>
+ *
+ * <p>v0.2 旧布局（runtime/、&lt;dbId&gt;/toolkit/、&lt;dbId&gt;/runtime/node）由 {@link Migrator}
+ * 在首次启动时一次性迁到上述新位置，迁移完成写入 state.migratedToV3 标记。
  */
 public final class Installer {
 
-    /** 共享运行时目录名（jlink 产物，安装器 GUI 与 Oracle toolkit 共用，与用户机器 JDK 解耦）。 */
-    public static final String RUNTIME_DIR_NAME = "runtime";
+    /** v0.3 共享运行时根目录名（runtimes/java、runtimes/node）。 */
+    public static final String RUNTIMES_DIR = "runtimes";
+    /** v0.3 实现根目录名（impls/&lt;dbId&gt;/&lt;serverId&gt;/）。 */
+    public static final String IMPLS_DIR = "impls";
+    /** v0.2 旧共享运行时目录名；仅用于迁移检测与兼容回退。 */
+    public static final String LEGACY_RUNTIME_DIR_NAME = "runtime";
     private static final String RUNTIME_ZIP_RESOURCE = "runtime/runtime.zip";
     private static final String TAP_RESOURCE = "tap/" + Cfg.TAP_FILE_NAME;
 
@@ -65,12 +72,12 @@ public final class Installer {
         extractOrCopy(Cfg.tapJarOverride(), TAP_RESOURCE, dest);
     }
 
-    /** 释放共享 jlink 运行时到 baseDir/runtime；已存在则跳过。 */
+    /** 释放共享 jlink 运行时到 baseDir/runtimes/java；已存在则跳过。 */
     public static void deployRuntime(Path baseDir) throws IOException {
         if (runtimeJava(baseDir) != null) {
             return;
         }
-        Path target = baseDir.resolve(RUNTIME_DIR_NAME);
+        Path target = baseDir.resolve(RUNTIMES_DIR).resolve("java");
         String override = System.getProperty("setup.runtimeZip");
         if (override != null && !override.isBlank()) {
             Path src = Path.of(override);
@@ -89,19 +96,22 @@ public final class Installer {
         }
     }
 
-    /** 释放某库 toolkit 到 baseDir/<dbId>/toolkit/<file>（jar 或目录），并解压附加实现目录（如 mysql 的 naganpm）。
-     *  幂等：目标已就绪（非空文件或非空目录）则跳过，避免每次"添加数据源"都重复解压数千个 node_modules 文件（杀软逐个扫描，耗时分钟级）。 */
+    /** 释放某库 toolkit 到 baseDir/impls/&lt;dbId&gt;/&lt;serverId&gt;/（每个 McpServerOption 独立一份），并解压附加实现目录。
+     *  幂等：目标已就绪则跳过，避免重复解压数千个 node_modules 文件。 */
     public static void deployToolkit(Path baseDir, String dbId, DbAdapter adapter) throws IOException {
-        Path dest = toolkitPath(baseDir, dbId, adapter);
         String srcDb = adapter.toolkitSourceDbId();
         String res = "toolkit/" + srcDb + "/" + adapter.toolkitFileName();
-        if (!isDeployed(dest)) {
-            extractOrCopy(null, res, dest);
-        }
-        for (String extra : adapter.extraToolkitDirResources()) {
-            Path extraDest = dbDir(baseDir, dbId).resolve("toolkit").resolve(extra.substring(extra.lastIndexOf('/') + 1));
-            if (!isDeployed(extraDest)) {
-                extractOrCopy(null, extra, extraDest);
+        for (McpServerOption opt : adapter.mcpServerOptions()) {
+            Path dest = ImplRegistry.implDir(baseDir, dbId, opt.id());
+            if (!isDeployed(dest)) {
+                extractOrCopy(null, res, dest);
+            }
+            for (String extra : adapter.extraToolkitDirResources()) {
+                String name = extra.substring(extra.lastIndexOf('/') + 1);
+                Path extraDest = dest.resolve(name);
+                if (!isDeployed(extraDest)) {
+                    extractOrCopy(null, extra, extraDest);
+                }
             }
         }
     }
@@ -125,9 +135,9 @@ public final class Installer {
         return false;
     }
 
-    /** 释放某库服务端运行时（如 mysql 的 node）到 baseDir/<dbId>/runtime/<name>。 */
+    /** 释放某库服务端运行时（如 mysql 的 node）到 baseDir/runtimes/node/（v0.3 共享）。 */
     public static void deployDbRuntime(Path baseDir, String dbId, DbAdapter adapter) throws IOException {
-        Path dest = dbDir(baseDir, dbId).resolve(RUNTIME_DIR_NAME).resolve("node");
+        Path dest = baseDir.resolve(RUNTIMES_DIR).resolve("node");
         if (Files.isRegularFile(dest) || Files.isRegularFile(dest.resolve("node.exe")) || Files.isRegularFile(dest.resolve("node"))) {
             return;
         }
@@ -142,7 +152,8 @@ public final class Installer {
     }
 
     public static Path toolkitPath(Path baseDir, String dbId, DbAdapter adapter) {
-        return dbDir(baseDir, dbId).resolve("toolkit").resolve(adapter.toolkitFileName());
+        String serverId = adapter.mcpServerOptions().isEmpty() ? "default" : adapter.mcpServerOptions().get(0).id();
+        return ImplRegistry.implDir(baseDir, dbId, serverId);
     }
 
     public static Path envDir(Path baseDir, String dbId, String env) {
@@ -222,11 +233,14 @@ public final class Installer {
         }
     }
 
-    /** 共享运行时 java 可执行文件；未部署返回 null。 */
+    /** 共享运行时 java 可执行文件；优先检查 v0.3 路径 runtimes/java/，回退 v0.2 路径 runtime/（迁移前兼容）。 */
     public static Path runtimeJava(Path baseDir) {
         boolean win = System.getProperty("os.name", "").toLowerCase().contains("win");
-        Path exe = baseDir.resolve(RUNTIME_DIR_NAME).resolve("bin").resolve(win ? "java.exe" : "java");
-        return Files.isRegularFile(exe) ? exe : null;
+        String exeName = win ? "java.exe" : "java";
+        Path exe = baseDir.resolve(RUNTIMES_DIR).resolve("java").resolve("bin").resolve(exeName);
+        if (Files.isRegularFile(exe)) return exe;
+        Path legacy = baseDir.resolve(LEGACY_RUNTIME_DIR_NAME).resolve("bin").resolve(exeName);
+        return Files.isRegularFile(legacy) ? legacy : null;
     }
 
     /** 注册/自检使用的 java：优先安装目录内的共享运行时，其次当前 JVM。 */

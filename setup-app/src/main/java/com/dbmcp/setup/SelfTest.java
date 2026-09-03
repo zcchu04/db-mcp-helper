@@ -141,9 +141,9 @@ public final class SelfTest {
                 w.write(initMsg);
                 w.write("\n");
                 w.flush();
-                String initResp = awaitId(lines, "1");
+                String initResp = awaitId(lines, "1", proc);
                 if (initResp == null) {
-                    r.detail = "MCP 握手超时（initialize 无响应）";
+                    r.detail = awaitFailDetail(lines, "initialize", proc, errBuf);
                     r.stderrTail = tail(errBuf);
                     log.println("FAIL: " + r.detail);
                     log.println("stderrTail:\n" + r.stderrTail);
@@ -163,9 +163,9 @@ public final class SelfTest {
                 w.write(pingMsg);
                 w.write("\n");
                 w.flush();
-                String pingResp = awaitId(lines, "2");
+                String pingResp = awaitId(lines, "2", proc);
                 if (pingResp == null) {
-                    r.detail = pingTool + " 超时（数据库连接可能缓慢或不可达）";
+                    r.detail = awaitFailDetail(lines, pingTool, proc, errBuf);
                     r.stderrTail = tail(errBuf);
                     log.println("FAIL: " + r.detail);
                     log.println("stderrTail:\n" + r.stderrTail);
@@ -302,10 +302,22 @@ public final class SelfTest {
 
     /** 从读线程的行队列中等待包含指定 id 的响应行，超时返回 null。 */
     private static String awaitId(LinkedBlockingQueue<String> lines, String id) {
+        return awaitId(lines, id, null);
+    }
+
+    /**
+     * 从读线程的行队列中等待包含指定 id 的响应行。
+     * 若传入 proc，子进程提前退出时立即返回 null（不再等满 TIMEOUT_SECONDS），
+     * 避免 node 崩溃后仍空等 90 秒。
+     */
+    private static String awaitId(LinkedBlockingQueue<String> lines, String id, Process proc) {
         String marker = "\"id\":" + id;
         String markerSpaced = "\"id\": " + id;
         long deadline = System.currentTimeMillis() + TIMEOUT_SECONDS * 1000L;
         while (System.currentTimeMillis() < deadline) {
+            if (proc != null && !proc.isAlive()) {
+                return null;
+            }
             String line;
             try {
                 long left = deadline - System.currentTimeMillis();
@@ -322,6 +334,35 @@ public final class SelfTest {
             }
         }
         return null;
+    }
+
+    /** 根据子进程存活状态构造可读的错误详情：进程已死则附带 stderr 关键错误，否则报超时。 */
+    private static String awaitFailDetail(LinkedBlockingQueue<String> lines, String phase, Process proc, StringBuilder errBuf) {
+        if (proc != null && !proc.isAlive()) {
+            String stderr = tail(errBuf);
+            String cause = extractFirstErrorLine(stderr);
+            String base = phase + " 失败（服务端进程已退出）";
+            return cause.isEmpty() ? base : base + "：" + cause;
+        }
+        return phase + " 超时（initialize 无响应）";
+    }
+
+    /** 从 stderr 文本中提取第一行有意义的错误信息（跳过空行与 tap 框架日志前缀）。 */
+    private static String extractFirstErrorLine(String stderr) {
+        if (stderr == null || stderr.isEmpty()) {
+            return "";
+        }
+        for (String line : stderr.split("\n")) {
+            String t = line.trim();
+            if (t.isEmpty() || t.startsWith("[mcp-tap]")) {
+                continue;
+            }
+            if (t.length() > 200) {
+                t = t.substring(0, 200);
+            }
+            return t;
+        }
+        return "";
     }
 
     /**

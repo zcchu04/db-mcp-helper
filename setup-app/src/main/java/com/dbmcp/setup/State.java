@@ -29,6 +29,8 @@ public final class State {
     public String root;
     public String toolkitVersion;
     public String javaCmd;
+    /** v0.2 → v0.3 目录布局迁移已完成标记（Migrator 写入，幂等判断依据）。 */
+    public boolean migratedToV3;
     /** 连接键（dbId/env）→ 连接信息（含按 mcpServer 分组的实现列表）。 */
     public Map<String, EnvInfo> envs = new LinkedHashMap<>();
     /** 已部署 skill 的 agent 技能根目录列表（映射文件同步目标）。 */

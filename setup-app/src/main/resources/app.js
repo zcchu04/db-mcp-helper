@@ -97,6 +97,7 @@ const S = {
   cmd: { open:false, q:"", idx:0 },
   modal: null,
   logPollTimer: null,
+  runtimes: null,  // {java:{source,version,executable,available,override}, node:{...}}
 };
 
 /* ---------- Helpers ---------- */
@@ -216,6 +217,19 @@ function hideLoading(){
   const m = $("#loading-mask"); if (m) m.remove();
 }
 
+function fileToBase64(file){
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => { const s = r.result; resolve(s.indexOf(",") >= 0 ? s.split(",")[1] : s); };
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(file);
+  });
+}
+
+function showModal(title, bodyHtml){
+  openModal(`<div class="modal-header"><h3>${esc(title)}</h3><button class="so-close" onclick="closeModal()">${IC.x}</button></div><div class="modal-body">${bodyHtml}</div>`);
+}
+
 /* ---------- Theme ---------- */
 function applyTheme(){
   const pref = S.prefs.theme || "system";
@@ -260,7 +274,7 @@ function toggleSidebar(){
 /* ---------- Router ---------- */
 const CRUMB = {
   welcome:"欢迎", setup:"接入向导", overview:"总览",
-  instances:"MCP服务实例", runtime:"Skill 与运行时",
+  instances:"MCP服务实例", implementations:"实现管理", runtime:"Skill 与运行时",
   diagnostics:"排障", system:"系统"
 };
 function parseHash(){
@@ -304,13 +318,17 @@ function markActiveNav(name){
 /* ---------- Boot ---------- */
 async function boot(){
   try {
-    const [det, adaptersR, prefs] = await Promise.all([
+    const [det, adaptersR, prefs, implsR, runtimesR] = await Promise.all([
       api("/api/detect"),
       api("/api/adapters"),
-      api("/api/prefs").catch(() => null)
+      api("/api/prefs").catch(() => null),
+      api("/api/impls").catch(() => null),
+      api("/api/runtimes").catch(() => null)
     ]);
     S.detect = det;
     S.adapters = (adaptersR && adaptersR.adapters) || [];
+    S.impls = implsR || {};
+    S.runtimes = runtimesR;
     if (prefs) S.prefs = Object.assign(S.prefs, prefs);
     S.booted = true;
   } catch (e){
@@ -359,6 +377,7 @@ function renderMain(){
       case "setup":       html = pageSetup(r.step); break;
       case "overview":    html = pageOverview(); break;
       case "instances":   html = pageInstances(); break;
+      case "implementations": html = pageImplementations(); break;
       case "runtime":     html = pageRuntime(); break;
       case "diagnostics": html = pageDiagnostics(); break;
       case "system":      html = pageSystem(); break;
@@ -453,6 +472,24 @@ function pageSetup(step){
   </div>`;
 }
 
+/* 计算某实现的部署状态：null=未安装, 'ok'=已就绪, 'no-runtime'=已装但缺运行时 */
+function implStatus(dbId, serverId){
+  const impls = (S.detect && S.detect.impls) || S.impls || {};
+  const info = impls[dbId] && impls[dbId][serverId];
+  if (!info) return null;
+  const rr = (S.detect && S.detect.runtimeReady) || {};
+  if (!rr[dbId]) return 'no-runtime';
+  return 'ok';
+}
+
+/* 状态徽章 HTML */
+function implStatusBadge(dbId, serverId){
+  const st = implStatus(dbId, serverId);
+  if (st === null) return `<span class="impl-status-badge need-download">需下载</span>`;
+  if (st === 'no-runtime') return `<span class="impl-status-badge need-runtime">缺运行时</span>`;
+  return `<span class="impl-status-badge ok">✓ 已安装</span>`;
+}
+
 function setupStep1(){
   const curDb = S.wizard.dbId;
   const curImpl = S.wizard.mcpServer;
@@ -476,15 +513,23 @@ function setupStep1(){
                   const tools = o.allTools || a.allTools || [];
                   const show = tools.slice(0, 6);
                   const more = tools.length - show.length;
-                  return `<div class="impl-card ${on?'on':''}" data-pick-impl data-db="${esc(a.id)}" data-impl="${esc(o.id)}">
+                  const st = implStatus(a.id, o.id);
+                  const notInst = st === null ? 'not-installed' : '';
+                  return `<div class="impl-card ${on?'on':''} ${notInst}" data-pick-impl data-db="${esc(a.id)}" data-impl="${esc(o.id)}">
+                    ${implStatusBadge(a.id, o.id)}
                     <div class="impl-card-name">${esc(o.displayName)}</div>
                     ${o.description ? `<div class="impl-card-desc">${esc(o.description)}</div>` : ''}
                     <div class="impl-card-tools">${show.map(t => `<span class="impl-tool-chip">${esc(typeof t === 'string' ? t : t.name || t.id)}</span>`).join("")}${more > 0 ? `<span class="impl-card-tools-more">+${more}</span>` : ''}</div>
                   </div>`;
-                }).join("") : `<div class="impl-card ${curDb===a.id?'on':''}" data-pick-impl data-db="${esc(a.id)}" data-impl="">
+                }).join("") : (() => {
+                    const dst = implStatus(a.id, "");
+                    const dnotInst = dst === null ? 'not-installed' : '';
+                    return `<div class="impl-card ${curDb===a.id?'on':''} ${dnotInst}" data-pick-impl data-db="${esc(a.id)}" data-impl="">
+                    ${implStatusBadge(a.id, "")}
                     <div class="impl-card-name">默认实现</div>
                     <div class="impl-card-tools">${(a.allTools||[]).map(t => `<span class="impl-tool-chip">${esc(typeof t === 'string' ? t : t.name || t.id)}</span>`).join("")}</div>
-                  </div>`}
+                  </div>`;
+                  })()}
               </div>
             </div>`;
           }).join("")}
@@ -492,7 +537,7 @@ function setupStep1(){
       </div>
       <div class="flex gap-3 mt-6" style="justify-content:flex-end">
         <button class="btn secondary" id="s1-cancel">取消</button>
-        <button class="btn primary" id="s1-next" ${curDb?'':'disabled'}>下一步 ${IC.right}</button>
+        <button class="btn primary" id="s1-next" ${curDb?'':'disabled'}>${curDb && implStatus(curDb, curImpl) === null ? '下载并安装' : '下一步'} ${IC.right}</button>
       </div>
     </div>
     <aside class="wizard-side">
@@ -881,12 +926,76 @@ function instCard(x){
 }
 
 /* ==========================================================================
+   PAGE: Implementations
+   ========================================================================== */
+async function refreshImpls(){
+  try { S.impls = await api("/api/impls") || {}; } catch(e){}
+}
+async function refreshRuntimes(){
+  try { S.runtimes = await api("/api/runtimes") || null; } catch(e){}
+}
+function pageImplementations(){
+  const impls = S.impls || {};
+  const adapters = S.adapters || [];
+  const groups = adapters.map(a => {
+    const dbImpls = impls[a.id] || {};
+    const opts = a.mcpServerOptions || [];
+    const cards = opts.map(opt => {
+      const info = dbImpls[opt.id] || null;
+      return { opt, info };
+    });
+    return { adapter: a, cards };
+  }).filter(g => g.cards.length > 0);
+  const totalImpls = groups.reduce((s, g) => s + g.cards.filter(c => c.info).length, 0);
+  return `<div class="page">
+    <div class="page-title-row"><div><div class="page-title">MCP 服务实现管理</div><div class="page-sub">${adapters.length} 种数据源 · ${totalImpls} 个已安装实现</div></div>
+      <div class="flex gap-2"><button class="btn secondary sm" id="impl-refresh">${IC.refresh} 刷新</button></div>
+    </div>
+    <div class="impl-groups">
+      ${groups.map(g => `<div class="impl-group">
+        <div class="impl-group-header">${dbIcon(g.adapter.id)}<span class="impl-group-name">${esc(g.adapter.displayName)}</span></div>
+        <div class="impl-cards">${g.cards.map(c => implMgmtCard(g.adapter, c.opt, c.info)).join("")}</div>
+      </div>`).join("")}
+    </div>
+  </div>`;
+}
+function implMgmtCard(a, opt, info){
+  const sourceLabel = { builtin:"内置", uploaded:"用户上传", github:"GitHub" };
+  const installed = !!info;
+  const version = info ? (info.version || "—") : "未安装";
+  const source = info ? (sourceLabel[info.source] || info.source || "—") : "—";
+  const date = info && info.installedAt ? relTime(info.installedAt) : "—";
+  const tools = opt.allTools || [];
+  return `<div class="mgmt-card ${installed?'':'empty'}">
+    <div class="mgmt-head">
+      <div class="mgmt-name">${esc(opt.displayName || opt.id)}</div>
+      ${installed ? `<span class="badge ok"><span class="dot"></span>已安装</span>` : `<span class="badge neutral">未安装</span>`}
+    </div>
+    ${opt.description ? `<div class="mgmt-desc">${esc(opt.description)}</div>` : ""}
+    ${tools.length ? `<div class="impl-card-tools">${tools.slice(0,8).map(t => `<span class="impl-tool-chip">${esc(t)}</span>`).join("")}${tools.length > 8 ? `<span class="impl-card-tools-more">+${tools.length-8}</span>` : ""}</div>` : ""}
+    <div class="mgmt-meta">
+      <span>版本 <strong>${esc(version)}</strong></span>
+      <span>来源 <strong>${esc(source)}</strong></span>
+      <span>安装 ${esc(date)}</span>
+    </div>
+    <div class="mgmt-actions">
+      <button class="btn ghost sm" data-impl-upload="${esc(a.id)}/${esc(opt.id)}"${!installed?' disabled':''}>${IC.edit} 上传替换</button>
+      <button class="btn ghost sm" data-impl-rollback="${esc(a.id)}/${esc(opt.id)}"${!installed?' disabled':''}>${IC.refresh} 回滚</button>
+      <button class="btn ghost sm" data-impl-bak="${esc(a.id)}/${esc(opt.id)}"${!installed?' disabled':''}>${IC.eye} 历史版本</button>
+      <button class="btn ghost sm" data-impl-check-update="${esc(a.id)}/${esc(opt.id)}">${IC.refresh} 检查更新</button>
+      <button class="btn ghost sm" data-impl-github-dl="${esc(a.id)}/${esc(opt.id)}">${IC.play} 从GitHub下载</button>
+    </div>
+  </div>`;
+}
+
+/* ==========================================================================
    PAGE: Runtime
    ========================================================================== */
 function pageRuntime(){
   const st = (S.detect && S.detect.state) || {};
   const targets = st.skillTargets || [];
   const tapOk = !!(S.detect && S.detect.tapDeployed);
+  const rt = S.runtimes || {};
   return `<div class="page">
     <div class="page-title-row"><div><div class="page-title">Skill 与运行时</div><div class="page-sub">管理 Skill 部署目标目录、toolkit / tap 状态</div></div>
       <div class="flex gap-2"><button class="btn secondary sm" id="rt-sync">${IC.refresh} 同步映射</button><button class="btn primary sm" id="rt-add-target">${IC.plus} 新增目标</button></div>
@@ -918,6 +1027,39 @@ function pageRuntime(){
         <dt>IDEA Qoder mcp.json</dt><dd>${esc(norm(S.detect.qoderPluginMcpJsonPath))}</dd><dt></dt>
         ${(S.detect.mcpClientPaths||[]).map(c => `<dt>${esc(c.name)} mcp.json</dt><dd><code>${esc(norm(c.path))}</code></dd><dt></dt>`).join("")}
       </dl>
+    </div>
+    <div class="card">
+      <div class="card-header"><h3>${IC.gear} 运行时环境</h3>
+        <button class="btn ghost sm" id="rt-env-refresh">${IC.refresh} 刷新</button>
+      </div>
+      <div class="rt-env-cards">
+        ${runtimeCard("java", "Java (JRE)", rt.java)}
+        ${runtimeCard("node", "Node.js", rt.node)}
+      </div>
+    </div>
+  </div>`;
+}
+function runtimeCard(kind, label, info){
+  if (!info) return `<div class="rt-env-card"><div class="rt-env-head"><strong>${esc(label)}</strong><span class="badge neutral">未检测</span></div><p class="text-mut">点击刷新获取运行时信息。</p></div>`;
+  const srcLabel = { bundled:"内置", local:"用户指定", system:"系统 PATH" };
+  const src = srcLabel[info.source] || info.source || "—";
+  const ok = info.available;
+  return `<div class="rt-env-card">
+    <div class="rt-env-head">
+      <strong>${esc(label)}</strong>
+      ${ok ? `<span class="badge ok"><span class="dot"></span>可用</span>` : `<span class="badge warn">不可用</span>`}
+    </div>
+    <dl class="kv">
+      <dt>来源</dt><dd><span class="badge neutral">${esc(src)}</span></dd><dt></dt>
+      <dt>版本</dt><dd>${esc(info.version || "—")}</dd><dt></dt>
+      <dt>路径</dt><dd class="rt-env-path">${esc(norm(info.executable))}</dd><dt></dt>
+      ${info.override ? `<dt>覆盖路径</dt><dd class="rt-env-path">${esc(norm(info.override))}</dd><dt></dt>` : ""}
+    </dl>
+    <div class="rt-env-actions">
+      <button class="btn secondary sm" data-rt-set-local="${esc(kind)}">${IC.edit} 选择本地目录</button>
+      <button class="btn ghost sm" data-rt-github-dl="${esc(kind)}">${IC.play} 从GitHub下载</button>
+      ${info.override ? `<button class="btn ghost sm" data-rt-reset="${esc(kind)}">${IC.refresh} 恢复默认</button>` : ""}
+      <button class="btn ghost sm" data-rt-check="${esc(kind)}">${IC.eye} 检测兼容性</button>
     </div>
   </div>`;
 }
@@ -1765,6 +1907,7 @@ function buildCmds(){
   const nav = [
     { g:"跳转", label:"总览", hint:"g o", run:() => navigate("#/overview") },
     { g:"跳转", label:"实例列表", hint:"g i", run:() => navigate("#/instances") },
+    { g:"跳转", label:"实现管理", hint:"g m", run:() => navigate("#/implementations") },
     { g:"跳转", label:"Skill 与运行时", hint:"g r", run:() => navigate("#/runtime") },
     { g:"跳转", label:"排障", hint:"g d", run:() => navigate("#/diagnostics") },
     { g:"跳转", label:"系统", hint:"g s", run:() => navigate("#/system") }
@@ -1915,6 +2058,92 @@ function bindPage(){
   bind("#diag-reveal-root", () => openPath("root-dir", "reveal"));
   bind("#rt-sync", syncMappings);
   bind("#rt-add-target", addSkillTargetPrompt);
+  bind("#rt-env-refresh", async () => { await refreshRuntimes(); renderMain(); toast("已刷新", "info"); });
+  $$("[data-rt-set-local]").forEach(el => el.onclick = () => showSetLocalRuntime(el.dataset.rtSetLocal));
+  $$("[data-rt-reset]").forEach(el => el.onclick = async () => {
+    const kind = el.dataset.rtReset;
+    try {
+      await api("/api/runtimes/" + kind + "/reset", {});
+      toast("已恢复默认运行时", "ok");
+      await refreshRuntimes(); renderMain();
+    } catch (e) { toast(e.message, "err"); }
+  });
+  $$("[data-rt-check]").forEach(el => el.onclick = async () => {
+    const kind = el.dataset.rtCheck;
+    const rt = (S.runtimes || {})[kind];
+    if (!rt || !rt.executable) { toast("无可用运行时，无法检测", "err"); return; }
+    try {
+      const dir = rt.executable.replace(/[/\\][^/\\]+$/, "");
+      const r = await api("/api/runtimes/" + kind + "/check?path=" + encodeURIComponent(dir));
+      openModal(`<div class="modal-header"><h3>${esc(kind)} 兼容性检测</h3><button class="so-close" id="m-x">${IC.x}</button></div>
+        <div class="modal-body">
+          <dl class="kv">
+            <dt>兼容</dt><dd>${r.compatible ? '<span class="badge ok">是</span>' : '<span class="badge warn">否</span>'}</dd><dt></dt>
+            <dt>版本</dt><dd>${esc(r.version || "—")}</dd><dt></dt>
+            <dt>可执行文件</dt><dd>${esc(norm(r.executable))}</dd><dt></dt>
+            ${r.error ? `<dt>错误</dt><dd style="color:var(--danger)">${esc(r.error)}</dd><dt></dt>` : ""}
+          </dl>
+        </div>
+        <div class="modal-footer"><button class="btn primary sm" id="m-ok">确定</button></div>`);
+      $("#m-x").onclick = closeModal;
+      $("#m-ok").onclick = closeModal;
+    } catch (e) { toast(e.message, "err"); }
+  });
+  bind("#impl-refresh", async () => { await refreshImpls(); renderMain(); toast("已刷新", "info"); });
+  $$("[data-impl-upload]").forEach(el => el.onclick = async (e) => {
+    e.stopPropagation();
+    const [dbId, serverId] = el.dataset.implUpload.split("/");
+    const inp = document.createElement("input");
+    inp.type = "file"; inp.accept = ".zip,.jar";
+    inp.onchange = async () => {
+      const file = inp.files[0]; if (!file) return;
+      showLoading("正在上传 " + file.name + "…");
+      try {
+        const b64 = await fileToBase64(file);
+        await api("/api/impls/" + dbId + "/" + serverId + "/upload", { zipBase64: b64, version: file.name.replace(/\.(zip|jar)$/i, "") });
+        await refreshImpls(); renderMain();
+        toast("上传成功", "ok");
+      } catch (e){ toast(e.message, "err"); }
+      finally { hideLoading(); }
+    };
+    inp.click();
+  });
+  $$("[data-impl-rollback]").forEach(el => el.onclick = async (e) => {
+    e.stopPropagation();
+    const [dbId, serverId] = el.dataset.implRollback.split("/");
+    if (!confirm("确认回滚到上一版本？当前实现将备份后可恢复。")) return;
+    try {
+      const r = await api("/api/impls/" + dbId + "/" + serverId + "/rollback", {});
+      await refreshImpls(); renderMain();
+      toast(r.message || "已回滚");
+    } catch (e){ toast(e.message, "err"); }
+  });
+  $$("[data-impl-bak]").forEach(el => el.onclick = async (e) => {
+    e.stopPropagation();
+    const [dbId, serverId] = el.dataset.implBak.split("/");
+    try {
+      const r = await api("/api/impls/" + dbId + "/" + serverId + "/bak-versions");
+      const versions = r.versions || [];
+      showModal("历史版本 · " + dbId + "/" + serverId, versions.length === 0
+        ? '<p class="text-mut">暂无历史版本。</p>'
+        : `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>版本</th><th>备份时间</th></tr></thead><tbody>${versions.map(v => `<tr><td class="mono">${esc(v.version||"—")}</td><td>${esc(relTime(v.bakTime||v.bakAt||""))}</td></tr>`).join("")}</tbody></table></div>`);
+    } catch (e){ toast(e.message, "err"); }
+  });
+  $$("[data-impl-check-update]").forEach(el => el.onclick = async (e) => {
+    e.stopPropagation();
+    const [dbId, serverId] = el.dataset.implCheckUpdate.split("/");
+    await checkImplUpdate(dbId, serverId, el);
+  });
+  $$("[data-impl-github-dl]").forEach(el => el.onclick = async (e) => {
+    e.stopPropagation();
+    const [dbId, serverId] = el.dataset.implGithubDl.split("/");
+    await showGithubImplDownload(dbId, serverId);
+  });
+  $$("[data-rt-github-dl]").forEach(el => el.onclick = async (e) => {
+    e.stopPropagation();
+    const kind = el.dataset.rtGithubDl;
+    await showGithubRuntimeDownload(kind);
+  });
   $$("[data-rm-target]").forEach(el => el.onclick = async () => {
     const t = el.dataset.rmTarget;
     try { await api("/api/skill/targets", {action:"remove", target:t}); toast("已移除 " + t); await refreshDetect(); renderMain(); }
@@ -1943,7 +2172,12 @@ function bindPage(){
                    testResult:null, serverName:"", mcpServer:impl };
     }
     $$("[data-pick-impl]").forEach(x => x.classList.toggle("on", x === el));
-    const nx = $("#s1-next"); if (nx) nx.disabled = false;
+    const nx = $("#s1-next");
+    if (nx) {
+      nx.disabled = false;
+      const st = implStatus(db, impl);
+      nx.innerHTML = (st === null ? '下载并安装' : '下一步') + ' ' + IC.right;
+    }
   });
   bind("#s1-next", async () => {
     if (!S.wizard.dbId){ toast("请选择数据源与实现", "warn"); return; }
@@ -2254,6 +2488,151 @@ async function syncMappings(){
   try { const r = await api("/api/skill/sync", {}); toast("已同步 " + (r.updated||[]).length + " 份映射"); }
   catch (e){ toast(e.message, "err"); }
 }
+function fmtSize(bytes){
+  if (!bytes || bytes <= 0) return "—";
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KB";
+  return (bytes / 1048576).toFixed(1) + " MB";
+}
+
+async function checkImplUpdate(dbId, serverId, el){
+  const installed = (S.impls || {})[dbId]?.[serverId];
+  const curVer = installed ? (installed.version || "—") : "未安装";
+  if (el){ el.disabled = true; el.textContent = "检查中…"; }
+  try {
+    const rel = await api("/api/releases/latest/artifacts?type=impl", null, "GET");
+    const tag = rel.tagName || "unknown";
+    const remoteVer = tag.replace(/^v/, "");
+    const localVer = (installed?.version || "").replace(/^v/, "");
+    const hasUpdate = localVer && remoteVer && remoteVer !== localVer;
+    if (!installed) {
+      toast("当前未安装，可直接从 GitHub 下载", "info");
+    } else if (hasUpdate) {
+      toast("发现新版本: " + tag + "（当前: " + curVer + "）", "info");
+    } else {
+      toast("已是最新版本 (" + curVer + ")", "ok");
+    }
+  } catch (e) {
+    toast("检查更新失败: " + e.message, "err");
+  } finally {
+    if (el){ el.disabled = false; el.innerHTML = IC.refresh + " 检查更新"; }
+  }
+}
+
+async function showGithubImplDownload(dbId, serverId){
+  const a = adapter(dbId);
+  const opt = a?.mcpServerOptions?.find(o => o.id === serverId);
+  const label = opt ? opt.displayName : serverId;
+  openModal(`<div class="modal-header"><h3>从 GitHub 下载 · ${esc(label)}</h3><button class="so-close" id="m-x">${IC.x}</button></div>
+  <div class="modal-body" id="m-github-body"><p class="text-mut">正在查询 GitHub Release…</p></div>
+  <div class="modal-footer"><button class="btn secondary" id="m-cancel">关闭</button></div>`);
+  $("#m-x").onclick = closeModal;
+  $("#m-cancel").onclick = closeModal;
+  try {
+    const rel = await api("/api/releases/latest/artifacts?type=impl", null, "GET");
+    const artifacts = rel.artifacts || [];
+    const body = $("#m-github-body");
+    if (!artifacts.length) {
+      body.innerHTML = `<p class="text-mut">当前 Release (${esc(rel.tagName)}) 没有可用的实现产物。</p>`;
+      return;
+    }
+    const installed = (S.impls || {})[dbId]?.[serverId];
+    const curVer = installed ? (installed.version || "—") : "未安装";
+    body.innerHTML = `<p class="text-mut" style="margin-bottom:12px">最新版本: <strong>${esc(rel.tagName)}</strong> · 当前: <strong>${esc(curVer)}</strong></p>
+    <div class="sel-dir-list">${artifacts.map((art, i) => `<div class="sel-dir-block" style="cursor:pointer" data-dl-idx="${i}">
+      <span class="sd-path">${esc(art.name)} <span class="text-mut" style="font-size:11px">${esc(art.platform)} · ${fmtSize(art.size)}</span></span>
+    </div>`).join("")}</div>`;
+    body.querySelectorAll("[data-dl-idx]").forEach(el => {
+      el.onclick = async () => {
+        const idx = Number(el.dataset.dlIdx);
+        const art = artifacts[idx];
+        body.innerHTML = `<p class="text-mut">正在下载 <strong>${esc(art.name)}</strong>…</p><div class="progress-bar"><div class="progress-fill" id="m-dl-bar" style="width:0%"></div></div><p class="text-mut" id="m-dl-status" style="font-size:12px;margin-top:8px">连接中…</p>`;
+        try {
+          const r = await api("/api/impls/" + dbId + "/" + serverId + "/install-url", { url: art.downloadUrl, version: rel.tagName });
+          toast("已安装 " + art.name, "ok");
+          closeModal();
+          await refreshImpls();
+          renderMain();
+        } catch (e) {
+          $("#m-dl-status").textContent = "下载失败: " + e.message;
+          $("#m-dl-status").style.color = "var(--danger)";
+        }
+      };
+    });
+  } catch (e) {
+    $("#m-github-body").innerHTML = `<p style="color:var(--danger)">查询失败: ${esc(e.message)}</p>`;
+  }
+}
+
+async function showGithubRuntimeDownload(kind){
+  const label = kind === "java" ? "Java (JRE)" : "Node.js";
+  const assetType = kind === "java" ? "runtime-jre" : "runtime-node";
+  openModal(`<div class="modal-header"><h3>从 GitHub 下载 · ${esc(label)} 运行时</h3><button class="so-close" id="m-x">${IC.x}</button></div>
+  <div class="modal-body" id="m-github-body"><p class="text-mut">正在查询 GitHub Release…</p></div>
+  <div class="modal-footer"><button class="btn secondary" id="m-cancel">关闭</button></div>`);
+  $("#m-x").onclick = closeModal;
+  $("#m-cancel").onclick = closeModal;
+  try {
+    const rel = await api("/api/releases/latest/artifacts?type=" + assetType, null, "GET");
+    const artifacts = rel.artifacts || [];
+    const body = $("#m-github-body");
+    if (!artifacts.length) {
+      body.innerHTML = `<p class="text-mut">当前 Release (${esc(rel.tagName)}) 没有可用的 ${esc(label)} 运行时产物。</p>`;
+      return;
+    }
+    const curInfo = (S.runtimes || {})[kind];
+    const curVer = curInfo ? (curInfo.version || "—") : "未检测到";
+    body.innerHTML = `<p class="text-mut" style="margin-bottom:12px">最新版本: <strong>${esc(rel.tagName)}</strong> · 当前: <strong>${esc(curVer)}</strong></p>
+    <div class="sel-dir-list">${artifacts.map((art, i) => `<div class="sel-dir-block" style="cursor:pointer" data-dl-idx="${i}">
+      <span class="sd-path">${esc(art.name)} <span class="text-mut" style="font-size:11px">${esc(art.platform)} · ${fmtSize(art.size)}</span></span>
+    </div>`).join("")}</div>`;
+    body.querySelectorAll("[data-dl-idx]").forEach(el => {
+      el.onclick = async () => {
+        const idx = Number(el.dataset.dlIdx);
+        const art = artifacts[idx];
+        body.innerHTML = `<p class="text-mut">正在下载 <strong>${esc(art.name)}</strong>…</p><div class="progress-bar"><div class="progress-fill" id="m-dl-bar" style="width:0%"></div></div><p class="text-mut" id="m-dl-status" style="font-size:12px;margin-top:8px">连接中…</p>`;
+        try {
+          const r = await api("/api/runtimes/" + kind + "/install", { url: art.downloadUrl });
+          toast("已安装 " + label + "运行时 " + (r.version || ""), "ok");
+          closeModal();
+          await refreshRuntimes();
+          renderMain();
+        } catch (e) {
+          $("#m-dl-status").textContent = "下载失败: " + e.message;
+          $("#m-dl-status").style.color = "var(--danger)";
+        }
+      };
+    });
+  } catch (e) {
+    $("#m-github-body").innerHTML = `<p style="color:var(--danger)">查询失败: ${esc(e.message)}</p>`;
+  }
+}
+
+function showSetLocalRuntime(kind){
+  const label = kind === "java" ? "Java (JRE)" : "Node.js";
+  openModal(`<div class="modal-header"><h3>设置${esc(label)}本地目录</h3><button class="so-close" id="m-x">${IC.x}</button></div>
+  <div class="modal-body">
+    <div class="field"><div class="field-label"><span>运行时目录路径</span><span class="field-hint">包含 bin/${esc(kind === "java" ? "java" : "node")} 可执行文件的目录</span></div>
+      <input class="input mono" id="m-rt-path" placeholder="${esc(kind === 'java' ? 'C:\\Program Files\\Java\\jdk-17' : 'C:\\Program Files\\nodejs')}" style="width:100%">
+    </div>
+  </div>
+  <div class="modal-footer"><button class="btn secondary" id="m-cancel">取消</button><button class="btn primary" id="m-ok">确定</button></div>`);
+  $("#m-x").onclick = closeModal;
+  $("#m-cancel").onclick = closeModal;
+  $("#m-ok").onclick = async () => {
+    const p = ($("#m-rt-path") || {}).value || "";
+    if (!p.trim()) { toast("请输入目录路径", "err"); return; }
+    try {
+      const r = await api("/api/runtimes/" + kind + "/set-local", { path: p.trim() });
+      toast("已设置" + label + "运行时", "ok");
+      closeModal();
+      await refreshRuntimes();
+      renderMain();
+    } catch (e) { toast(e.message, "err"); }
+  };
+  setTimeout(() => { const inp = $("#m-rt-path"); if (inp) inp.focus(); }, 100);
+}
+
 async function addSkillTargetPrompt(){
   // 推荐目录 = 与 MCP 注册弹框相同的客户端集合（QoderWork + 各 McpTarget 的技能根目录）
   const items = [{ name:"QoderWork", dir:"~/.qoderwork/skills" }];
