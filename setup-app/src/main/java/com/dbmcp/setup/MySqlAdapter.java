@@ -8,23 +8,45 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * MySQL 适配器：基于主流 Node 版 mysql-mcp-server（community）。
+ * MySQL 适配器：内置两种可选择的 MCP server 实现（配置实例页底部单选）。
  *
- * <p>与原 Oracle 链路的本质差异（已核实 MySQL 无官方 Java toolkit）：
+ * <p><b>实现一：benborla29 —— @benborla29/mcp-server-mysql 1.x（Node，默认）</b>
  * <ul>
- *   <li>连接配置走<b>环境变量</b>（MYSQL_HOST/PORT/USER/PASSWORD/DATABASE），而非 config.yaml；
- *       注册时通过 mcp.json 的 env 块注入，自检时注入进程环境。</li>
- *   <li>运行时为捆绑的 node（baseDir/mysql/runtime/node），而非 jlink JRE。</li>
- *   <li>无 db-ping 工具，自检改用 query 工具执行 {@code SELECT 1}。</li>
+ *   <li>单工具 {@code mysql_query}（万能 SQL 入口），与三个"写能力开关项"
+ *       {@code mysql_insert / mysql_update / mysql_delete} 组成勾选清单——
+ *       后三项并非真实工具，勾选后在注册/自检时注入对应环境变量
+ *       {@code ALLOW_INSERT/UPDATE/DELETE_OPERATION=true}（server 源码默认拒绝写操作）。</li>
+ *   <li>连接配置走环境变量（MYSQL_HOST/PORT/USER/PASSWORD/DATABASE），本包实际读取
+ *       MYSQL_PASS/MYSQL_DB，由 toolkit 的桥接 shim 转发；运行时为捆绑 node。</li>
+ *   <li>无独立 db-ping，自检用 {@code mysql_query} 执行 {@code SELECT 1}。</li>
  * </ul>
  *
- * <p>注：默认对接的 server 仓库与工具名（query/insert/update/delete）可按实际内置仓库调整，
- * 改动集中在 {@link #allTools()} 与 {@link #envVars(String, String, String, int, String)} 两处即可。
+ * <p><b>实现二：naganpm —— @naganpm/mysql-mcp-server 2.x（Node，可选）</b>
+ * <ul>
+ *   <li>8 个细粒度真工具：mysql_query（仅 SELECT）/ mysql_insert / mysql_update / mysql_delete /
+ *       mysql_show_tables / mysql_describe_table / mysql_show_databases / mysql_test_connection。</li>
+ *   <li>环境变量名（MYSQL_HOST/PORT/USER/PASSWORD/DATABASE）与适配器注入完全一致，无需 shim；
+ *       入口 dist/index.js（ESM）。</li>
+ * </ul>
  */
 public final class MySqlAdapter implements DbAdapter {
 
-    /** 工具名约定（可随实际内置 server 调整）。 */
-    private static final List<String> TOOLS = List.of("query", "insert", "update", "delete");
+    /** 实现一（benborla29）的勾选清单：1 个真实工具 + 3 个写能力开关项。 */
+    private static final List<String> TOOLS_BENBORLA =
+            List.of("mysql_query", "mysql_insert", "mysql_update", "mysql_delete");
+    /** 实现一必选项。 */
+    private static final List<String> REQUIRED_BENBORLA = List.of("mysql_query");
+    /** 实现二（naganpm）的 8 个真实工具。 */
+    private static final List<String> TOOLS_NAGA = List.of(
+            "mysql_query", "mysql_insert", "mysql_update", "mysql_delete",
+            "mysql_show_tables", "mysql_describe_table", "mysql_show_databases", "mysql_test_connection");
+    /** 实现二必选项（自检用 mysql_query）。 */
+    private static final List<String> REQUIRED_NAGA = List.of("mysql_query");
+
+    /** 实现一 id（与 mcpServerOptions 首项一致；EnvInfo.mcpServer 为空时也按它处理）。 */
+    public static final String IMPL_BENBORLA = "benborla29";
+    /** 实现二 id。 */
+    public static final String IMPL_NAGA = "naganpm";
 
     @Override
     public String id() {
@@ -47,6 +69,16 @@ public final class MySqlAdapter implements DbAdapter {
     }
 
     @Override
+    public List<String> extraToolkitDirResources() {
+        return List.of("toolkit/mysql/" + nagaDirName());
+    }
+
+    /** naga 实现的内置目录名（toolkit/mysql/ 下，与 benborla29 的 mysql-mcp-server 并列）。 */
+    public static String nagaDirName() {
+        return "mysql-naga-mcp-server";
+    }
+
+    @Override
     public String skillDir() {
         return "mysql-db-ops";
     }
@@ -63,17 +95,37 @@ public final class MySqlAdapter implements DbAdapter {
 
     @Override
     public List<String> requiredTools() {
-        return List.of("query");
+        return REQUIRED_BENBORLA;
     }
 
     @Override
     public List<String> allTools() {
-        return TOOLS;
+        return TOOLS_BENBORLA;
     }
 
     @Override
     public String serverPrefix() {
         return "mysql-";
+    }
+
+    /**
+     * 可选 MCP server 实现（配置实例页底部单选）。工具清单随实现下发，前端按所选实现渲染勾选区。
+     */
+    @Override
+    public List<McpServerOption> mcpServerOptions() {
+        return List.of(
+                new McpServerOption(
+                        IMPL_BENBORLA,
+                        "@benborla29/mcp-server-mysql (Node)",
+                        "单工具 mysql_query 执行任意 SQL；mysql_insert/update/delete 为写能力开关（默认只读）",
+                        TOOLS_BENBORLA,
+                        REQUIRED_BENBORLA),
+                new McpServerOption(
+                        IMPL_NAGA,
+                        "@naganpm/mysql-mcp-server (Node)",
+                        "8 个细粒度工具：增删改查独立工具 + 表结构/库列表/连接测试；mysql_query 仅 SELECT",
+                        TOOLS_NAGA,
+                        REQUIRED_NAGA));
     }
 
     @Override
@@ -97,49 +149,75 @@ public final class MySqlAdapter implements DbAdapter {
         StringBuilder sb = new StringBuilder();
         sb.append("# DB MCP Helper 环境配置（由 db-mcp-setup 生成，MySQL 实际以环境变量注入，此文件仅留档）\n");
         sb.append("# 修改后需在 AI 平台的连接器管理中对 ").append(serverPrefix()).append(env).append(" 执行 disable→enable 才会重载\n");
-        envVars(url, user, password, defaultPort(), dbFromUrl(url)).forEach((k, v) ->
+        envVars(url, user, password, defaultPort(), dbFromUrl(url), List.of()).forEach((k, v) ->
                 sb.append("# ").append(k).append("=").append(v).append("\n"));
         return sb.toString();
     }
 
+    /**
+     * 连接要素 + 写能力开关注入。
+     * benborla29 的 server 默认拒绝 INSERT/UPDATE/DELETE（源码 ALLOW_*_OPERATION 默认 false），
+     * 勾选对应开关项后在此注入 true 放开；naganpm 的写操作是真工具隔离，注入这些变量无效但无害。
+     */
     @Override
-    public Map<String, String> envVars(String url, String user, String password, int port, String db) {
+    public Map<String, String> envVars(String url, String user, String password, int port, String db, List<String> tools) {
         Map<String, String> env = new LinkedHashMap<>();
         env.put("MYSQL_HOST", hostFromUrl(url));
         env.put("MYSQL_PORT", String.valueOf(port));
         env.put("MYSQL_USER", user);
         env.put("MYSQL_PASSWORD", password);
         env.put("MYSQL_DATABASE", db);
+        List<String> ts = tools == null ? List.of() : tools;
+        if (ts.contains("mysql_insert")) {
+            env.put("ALLOW_INSERT_OPERATION", "true");
+        }
+        if (ts.contains("mysql_update")) {
+            env.put("ALLOW_UPDATE_OPERATION", "true");
+        }
+        if (ts.contains("mysql_delete")) {
+            env.put("ALLOW_DELETE_OPERATION", "true");
+        }
         return env;
     }
 
+    /** 按实现分派 server 入口：benborla29 → 桥接 shim（build/index.js）；naganpm → dist/index.js（ESM）。 */
     @Override
-    public List<String> buildCommand(Path baseDir, String dbId, String env, List<String> tools) {
+    public List<String> buildCommand(Path baseDir, String dbId, String env, List<String> tools, String mcpServer) {
         String java = Installer.resolveJava(baseDir);
         Path dbDir = Installer.dbDir(baseDir, dbId);
         boolean win = System.getProperty("os.name", "").toLowerCase().contains("win");
         Path nodeExe = dbDir.resolve("runtime").resolve("node").resolve(win ? "node.exe" : "node");
-        Path serverEntry = dbDir.resolve("toolkit").resolve(toolkitFileName()).resolve("build").resolve("index.js");
+        Path serverEntry = IMPL_NAGA.equals(mcpServer)
+                ? dbDir.resolve("toolkit").resolve(nagaDirName()).resolve("dist").resolve("index.js")
+                : dbDir.resolve("toolkit").resolve(toolkitFileName()).resolve("build").resolve("index.js");
         return List.of(
                 java, "-jar", baseDir.resolve("tap").resolve(Cfg.TAP_FILE_NAME).toString(),
-                "--log", Installer.callLog(baseDir, dbId, env).toString(), "--",
+                "--log", Installer.callLog(baseDir, dbId, env, mcpServer).toString(), "--",
                 nodeExe.toString(), serverEntry.toString());
     }
 
     @Override
     public String pingTool() {
-        return "query";
+        return "mysql_query";
     }
 
+    /** 自检入参按实现分派：benborla29 参数名 sql；naganpm 参数名 query（且仅允许 SELECT）。 */
     @Override
-    public JsonObject pingArguments() {
+    public JsonObject pingArguments(String mcpServer) {
         JsonObject args = new JsonObject();
-        args.addProperty("sql", "SELECT 1");
+        if (IMPL_NAGA.equals(mcpServer)) {
+            args.addProperty("query", "SELECT 1");
+        } else {
+            args.addProperty("sql", "SELECT 1");
+        }
         return args;
     }
 
     @Override
     public void parsePing(String resp, SelfTest.Result r) {
+        // 两实现的 mysql_query 工具响应结构一致：
+        // 成功 { content:[{type:"text", text: <json rows>}], isError:false }
+        // 失败 由框架返回 { error:{ code, message } } 或 { content:[...], isError:true }
         try {
             JsonObject root = JsonParser.parseString(resp).getAsJsonObject();
             if (root.has("error")) {
@@ -147,7 +225,8 @@ public final class MySqlAdapter implements DbAdapter {
                 r.detail = "query 返回错误：" + root.get("error");
                 return;
             }
-            JsonObject result = root.getAsJsonObject("result");
+            // 响应 content 套在 result 之下（与 Oracle 一致），需先解 result 再取 content
+            JsonObject result = root.has("result") ? root.getAsJsonObject("result") : root;
             boolean isError = result.has("isError") && result.get("isError").getAsBoolean();
             String text = "";
             if (result.has("content") && result.getAsJsonArray("content").size() > 0) {
@@ -158,10 +237,9 @@ public final class MySqlAdapter implements DbAdapter {
                 r.detail = text.isEmpty() ? "query 失败" : text;
                 return;
             }
-            r.ok = !text.isBlank();
-            r.detail = text.trim().lines().findFirst().orElse("OK").length() > 200
-                    ? text.trim().lines().findFirst().orElse("OK").substring(0, 200) + "..."
-                    : text.trim().lines().findFirst().orElse("OK");
+            // 通过 isError 判定即表示连通与 SELECT 1 执行成功（两实现 mysql_query 返回行集）
+            r.ok = true;
+            r.detail = "OK — 连通成功（SELECT 1）";
             r.fields.addProperty("db", "mysql");
         } catch (Exception e) {
             r.ok = false;

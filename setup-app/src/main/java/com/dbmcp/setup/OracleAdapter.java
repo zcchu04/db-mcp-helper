@@ -66,6 +66,17 @@ public final class OracleAdapter implements DbAdapter {
         return "oracle-";
     }
 
+    /** 可选 MCP server 实现。当前仅内置 Java toolkit 一种；引入其他实现时在此追加并按 id 分派。 */
+    @Override
+    public List<McpServerOption> mcpServerOptions() {
+        return List.of(new McpServerOption(
+                "builtin-toolkit",
+                "内置 Java toolkit",
+                "oracle-db-mcp-toolkit（JDBC + tap 代理），多工具：read-query / db-ping / table / explain-plan / write-query",
+                allTools(),
+                requiredTools()));
+    }
+
     @Override
     public RuntimeKind runtimeKind() {
         return RuntimeKind.JAVA_JAR;
@@ -95,16 +106,16 @@ public final class OracleAdapter implements DbAdapter {
     }
 
     @Override
-    public Map<String, String> envVars(String url, String user, String password, int port, String db) {
+    public Map<String, String> envVars(String url, String user, String password, int port, String db, List<String> tools) {
         return Map.of();
     }
 
     @Override
-    public List<String> buildCommand(Path baseDir, String dbId, String env, List<String> tools) {
+    public List<String> buildCommand(Path baseDir, String dbId, String env, List<String> tools, String mcpServer) {
         String java = Installer.resolveJava(baseDir);
         return List.of(
                 java, "-jar", baseDir.resolve("tap").resolve(Cfg.TAP_FILE_NAME).toString(),
-                "--log", Installer.callLog(baseDir, dbId, env).toString(), "--",
+                "--log", Installer.callLog(baseDir, dbId, env, mcpServer).toString(), "--",
                 java, "-DconfigFile=" + Installer.configFile(baseDir, dbId, env, this).toString(),
                 "-Dtools=" + String.join(",", tools),
                 "-jar", Installer.toolkitPath(baseDir, dbId, this).toString());
@@ -116,7 +127,7 @@ public final class OracleAdapter implements DbAdapter {
     }
 
     @Override
-    public JsonObject pingArguments() {
+    public JsonObject pingArguments(String mcpServer) {
         return new JsonObject();
     }
 

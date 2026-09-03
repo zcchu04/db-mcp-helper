@@ -94,4 +94,22 @@ public interface McpTarget {
 
     /** 从配置中移除一个 server。同样 .bak 备份。返回是否真删除了。 */
     boolean removeServer(Path cfg, String serverName) throws java.io.IOException;
+
+    /**
+     * 该客户端对应的 agent 技能根目录（用于 Skill 部署），如 {@code ~/.cursor/skills}。
+     * 默认由首个候选配置路径的父目录推导（父目录 + "skills"）；少数客户端（claude-code）技能目录
+     * 与配置路径不在同一父目录，单独纠正。返回 null 表示无法推导（前端不生成推荐按钮）。
+     */
+    default Path skillDir() {
+        if ("claude-code".equals(id())) {
+            return Paths.home("~/.claude/skills");
+        }
+        List<Path> cands = candidateConfigPaths();
+        if (cands == null || cands.isEmpty()) {
+            return null;
+        }
+        Path p = cands.get(0);
+        Path parent = p.getParent();
+        return parent == null ? null : parent.resolve("skills");
+    }
 }

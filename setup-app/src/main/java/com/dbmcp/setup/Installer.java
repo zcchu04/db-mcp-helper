@@ -7,6 +7,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 部署与环境配置模块：释放共享 JAR/运行时、生成环境连接配置、维护目录结构。
@@ -54,9 +55,13 @@ public final class Installer {
         return st;
     }
 
-    /** 释放共享 mcp-tap 到 baseDir/tap（优先 -Dsetup.tapJar，否则打包资源）。 */
+    /** 释放共享 mcp-tap 到 baseDir/tap（优先 -Dsetup.tapJar，否则打包资源）。
+     *  已存在且非空则跳过：避免覆盖正在被自检 tap 子进程占用的 jar（Windows 文件锁会导致部署失败）。 */
     public static void deployTap(Path baseDir) throws IOException {
         Path dest = baseDir.resolve("tap").resolve(Cfg.TAP_FILE_NAME);
+        if (Files.isRegularFile(dest) && Files.size(dest) > 0) {
+            return;
+        }
         extractOrCopy(Cfg.tapJarOverride(), TAP_RESOURCE, dest);
     }
 
@@ -84,11 +89,16 @@ public final class Installer {
         }
     }
 
-    /** 释放某库 toolkit 到 baseDir/<dbId>/toolkit/<file>（jar 或目录）。 */
+    /** 释放某库 toolkit 到 baseDir/<dbId>/toolkit/<file>（jar 或目录），并解压附加实现目录（如 mysql 的 naganpm）。 */
     public static void deployToolkit(Path baseDir, String dbId, DbAdapter adapter) throws IOException {
         Path dest = toolkitPath(baseDir, dbId, adapter);
         String res = "toolkit/" + dbId + "/" + adapter.toolkitFileName();
         extractOrCopy(null, res, dest);
+        for (String extra : adapter.extraToolkitDirResources()) {
+            // extra 形如 toolkit/mysql/mysql-naga-mcp-server，解压到 baseDir/<dbId>/toolkit/<basename>
+            Path extraDest = dbDir(baseDir, dbId).resolve("toolkit").resolve(extra.substring(extra.lastIndexOf('/') + 1));
+            extractOrCopy(null, extra, extraDest);
+        }
     }
 
     /** 释放某库服务端运行时（如 mysql 的 node）到 baseDir/<dbId>/runtime/<name>。 */
@@ -115,12 +125,78 @@ public final class Installer {
         return dbDir(baseDir, dbId).resolve("instance").resolve(env);
     }
 
-    public static Path configFile(Path baseDir, String dbId, String env, DbAdapter adapter) {
+    /**
+     * 共享连接配置文件（方案 B：连接要素仅落盘一份，位于 instance/&lt;env&gt;/ 下）。
+     * 文件名直接沿用适配器声明（Oracle → config.yaml，MySQL → .env），
+     * 与历史布局一致，升级后旧实例无需重建。
+     */
+    public static Path connectionFile(Path baseDir, String dbId, String env, DbAdapter adapter) {
         return envDir(baseDir, dbId, env).resolve(adapter.configFileName());
     }
 
-    public static Path callLog(Path baseDir, String dbId, String env) {
-        return envDir(baseDir, dbId, env).resolve("calllog.jsonl");
+    /** 兼容别名：Oracle -DconfigFile 指向共享连接文件。 */
+    public static Path configFile(Path baseDir, String dbId, String env, DbAdapter adapter) {
+        return connectionFile(baseDir, dbId, env, adapter);
+    }
+
+    /** 某实现（provider）专属目录：instance/<env>/<mcpServer>/（仅存该实现的 calllog）。 */
+    public static Path providerDir(Path baseDir, String dbId, String env, String mcpServer) {
+        return envDir(baseDir, dbId, env).resolve(mcpServer);
+    }
+
+    public static Path callLog(Path baseDir, String dbId, String env, String mcpServer) {
+        return providerDir(baseDir, dbId, env, mcpServer).resolve("calllog.jsonl");
+    }
+
+    /**
+     * 一次性磁盘布局迁移：旧版把 calllog.jsonl 直接放在 instance/&lt;env&gt;/ 下（假定单实现），
+     * 方案 B 后应落到 instance/&lt;env&gt;/&lt;mcpServer&gt;/calllog.jsonl。
+     * 幂等：源文件不存在或目标已存在则跳过；历史日志整体归属该连接的第一个实现。
+     */
+    public static void migrateProviderLayout(Path baseDir, Map<String, State.EnvInfo> envs) {
+        if (envs == null || envs.isEmpty()) {
+            return;
+        }
+        for (Map.Entry<String, State.EnvInfo> e : envs.entrySet()) {
+            State.EnvInfo info = e.getValue();
+            if (info == null || info.providers == null || info.providers.isEmpty()) {
+                continue;
+            }
+            int slash = e.getKey().indexOf('/');
+            if (slash < 0) {
+                continue;
+            }
+            String dbId = e.getKey().substring(0, slash);
+            String env = e.getKey().substring(slash + 1);
+            if (DbAdapters.get(dbId) == null) {
+                continue;
+            }
+            Path legacy = envDir(baseDir, dbId, env).resolve("calllog.jsonl");
+            if (!Files.isRegularFile(legacy)) {
+                continue;
+            }
+            String first = info.providers.keySet().iterator().next();
+            Path target = callLog(baseDir, dbId, env, first);
+            try {
+                Files.createDirectories(target.getParent());
+                if (Files.isRegularFile(target)) {
+                    // 目标已存在（已迁移过）：源文件只剩残留，尽力清理
+                    Files.deleteIfExists(legacy);
+                    continue;
+                }
+                try {
+                    Files.move(legacy, target);
+                } catch (IOException lockOrCrossDevice) {
+                    // 运行中的 tap 进程可能持有句柄：退化为复制，历史日志不丢
+                    Files.copy(legacy, target, StandardCopyOption.REPLACE_EXISTING);
+                    try {
+                        Files.deleteIfExists(legacy);
+                    } catch (IOException ignored2) {
+                    }
+                }
+            } catch (IOException ignored) {
+            }
+        }
     }
 
     /** 共享运行时 java 可执行文件；未部署返回 null。 */
@@ -202,16 +278,10 @@ public final class Installer {
             Files.copy(Path.of(overridePath), target, StandardCopyOption.REPLACE_EXISTING);
             return;
         }
-        // 资源可能是文件或目录（mysql server / node 运行时）。目录型资源以 "/" 结尾标记。
+        // 目录型资源优先（以 "/" 结尾标记）。注意：ClassLoader.getResourceAsStream 对目录条目
+        // 可能返回 0 字节流，若先按单文件处理会把目录写成空文件并提前返回，导致目录型资源
+        // （mysql server / node 运行时）解压为空文件。因此先判定目录再回退单文件。
         String dirRes = resourcePath.endsWith("/") ? resourcePath : resourcePath + "/";
-        try (InputStream in = Installer.class.getClassLoader().getResourceAsStream(resourcePath)) {
-            if (in != null) {
-                Files.createDirectories(target.getParent());
-                Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
-                return;
-            }
-        }
-        // 尝试目录型资源（遍历 classpath 下该前缀的所有条目）
         java.net.URL dirUrl = Installer.class.getClassLoader().getResource(dirRes);
         if (dirUrl != null && "jar".equals(dirUrl.getProtocol())) {
             copyJarDirResource(dirRes, target);
@@ -224,6 +294,14 @@ public final class Installer {
                 throw new IOException("资源目录 URL 非法：" + dirUrl, e);
             }
             return;
+        }
+        // 单文件资源
+        try (InputStream in = Installer.class.getClassLoader().getResourceAsStream(resourcePath)) {
+            if (in != null) {
+                Files.createDirectories(target.getParent());
+                Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
+                return;
+            }
         }
         throw new IOException("缺少内置资源 " + resourcePath + "（或 " + dirRes + "），且未通过系统属性指定外部文件");
     }
@@ -278,15 +356,17 @@ public final class Installer {
         return env != null && env.matches("^[a-z][a-z0-9-]{0,31}$");
     }
 
-    /** 生成环境连接配置。密码仅本地落盘；adapter 决定配置文件名与内容（YAML 或 .env 留档）。 */
-    public static void writeEnvConfig(Path baseDir, String dbId, String env, DbAdapter adapter,
+    /** 生成共享连接配置 + 确保该实现目录存在。密码仅本地落盘一份；adapter 决定文件名与内容。 */
+    public static void writeEnvConfig(Path baseDir, String dbId, String env, String mcpServer, DbAdapter adapter,
                                       String url, String user, String password) throws IOException {
         Path dir = envDir(baseDir, dbId, env);
         Files.createDirectories(dir);
         String content = adapter.renderConfig(env, url, user, password);
-        Path file = dir.resolve(adapter.configFileName());
+        Path file = connectionFile(baseDir, dbId, env, adapter);
         Files.writeString(file, content, StandardCharsets.UTF_8);
         chmod600IfPosix(file);
+        // 该实现专属目录（仅承载 calllog），提前创建避免自检首次写日志时竞态
+        Files.createDirectories(providerDir(baseDir, dbId, env, mcpServer));
     }
 
     private static void chmod600IfPosix(Path f) {
@@ -300,8 +380,8 @@ public final class Installer {
     }
 
     /** 读取调用日志尾部（最新在前）。 */
-    public static List<String> tailCallLog(Path baseDir, String dbId, String env, int limit) throws IOException {
-        Path f = callLog(baseDir, dbId, env);
+    public static List<String> tailCallLog(Path baseDir, String dbId, String env, String mcpServer, int limit) throws IOException {
+        Path f = callLog(baseDir, dbId, env, mcpServer);
         if (!Files.isRegularFile(f)) {
             return List.of();
         }

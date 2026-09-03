@@ -73,15 +73,24 @@ public final class SkillService {
                 continue;
             }
             State.EnvInfo info = e.getValue();
-            boolean writable = adapter.runtimeKind() == DbAdapter.RuntimeKind.JAVA_JAR
-                    ? info.tools.contains("write-query")
-                    : info.tools.stream().anyMatch(t -> !t.equals("query"));
-            sb.append("| ").append(e.getKey())
-                    .append(" | ").append(adapter.serverPrefix()).append(e.getKey())
-                    .append(" | ").append(writable ? "读写" : "只读")
-                    .append(" | ").append(String.join(", ", info.tools))
-                    .append(" | ").append(info.aliases.isEmpty() ? "—" : String.join("、", info.aliases))
-                    .append(" |\n");
+            int slash = e.getKey().indexOf('/');
+            String envCode = slash >= 0 ? e.getKey().substring(slash + 1) : e.getKey();
+            for (Map.Entry<String, State.ProviderInfo> pe : info.providers.entrySet()) {
+                String mcpServer = pe.getKey();
+                State.ProviderInfo p = pe.getValue();
+                List<String> tools = p.tools;
+                boolean writable = adapter.runtimeKind() == DbAdapter.RuntimeKind.JAVA_JAR
+                        ? tools.contains("write-query")
+                        : tools.stream().anyMatch(t -> !t.equals("query"));
+                String serverName = (p.serverName != null && !p.serverName.isBlank())
+                        ? p.serverName : adapter.defaultServerName(envCode, mcpServer);
+                sb.append("| ").append(e.getKey())
+                        .append(" | ").append(serverName)
+                        .append(" | ").append(writable ? "读写" : "只读")
+                        .append(" | ").append(String.join(", ", tools))
+                        .append(" | ").append(info.aliases.isEmpty() ? "—" : String.join("、", info.aliases))
+                        .append(" |\n");
+            }
         }
         return sb.toString();
     }

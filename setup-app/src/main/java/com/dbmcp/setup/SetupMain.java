@@ -39,6 +39,8 @@ public final class SetupMain {
     private static final java.util.concurrent.ConcurrentHashMap<String, SelfTest.Result> TEST_RESULTS = new java.util.concurrent.ConcurrentHashMap<>();
     private static final SelfTest.Result RUNNING_MARKER = new SelfTest.Result();
     static { RUNNING_MARKER.detail = "running"; }
+    /** 旧磁盘布局迁移只跑一次（进程内）。 */
+    private static volatile boolean LAYOUT_MIGRATED = false;
 
     static boolean NO_BROWSER = false;
 
@@ -167,7 +169,10 @@ public final class SetupMain {
             case "/api/env/test":
                 return ok(envTest(body));
             case "/api/env/test/poll":
-                return ok(envTestPoll(query(uri, "env")));
+                return ok(envTestPoll(query(uri, "dbId"), query(uri, "env"), query(uri, "mcpServer")));
+            case "/api/env/test/log":
+                // 必须包 ok()，否则前端 api() 因 !j.ok 抛错、被轮询 catch 静默吞掉，导致自检黑色终端始终空白
+                return ok(envTestLog(query(uri, "dbId"), query(uri, "env"), query(uri, "mcpServer")));
             case "/api/env/register":
                 return ok(envRegister(body));
             case "/api/env/delete":
@@ -175,7 +180,8 @@ public final class SetupMain {
             case "/api/env/log":
                 return envLog(uri);
             case "/api/env/guide":
-                return envGuide(uri);
+                // 与 /api/env/test/log 一致包 ok()，避免将来有前端消费者时重蹈 api() 抛 !j.ok 的覆辙
+                return ok(envGuide(uri));
             case "/api/skill/deploy":
                 return ok(skillDeploy(body));
             case "/api/skill/sync":
@@ -234,6 +240,21 @@ public final class SetupMain {
             JsonArray req = new JsonArray();
             a.requiredTools().forEach(req::add);
             o.add("requiredTools", req);
+            JsonArray srvOpts = new JsonArray();
+            for (McpServerOption opt : a.mcpServerOptions()) {
+                JsonObject so = new JsonObject();
+                so.addProperty("id", opt.id());
+                so.addProperty("displayName", opt.displayName());
+                so.addProperty("description", opt.description());
+                JsonArray ot = new JsonArray();
+                opt.allTools().forEach(ot::add);
+                so.add("allTools", ot);
+                JsonArray rt = new JsonArray();
+                opt.requiredTools().forEach(rt::add);
+                so.add("requiredTools", rt);
+                srvOpts.add(so);
+            }
+            o.add("mcpServerOptions", srvOpts);
             arr.add(o);
         }
         JsonObject d = new JsonObject();
@@ -246,6 +267,14 @@ public final class SetupMain {
     private static JsonObject detect() {
         Path root = resolveRoot(null);
         State st = State.load(root);
+        // 旧布局（instance/<env>/calllog.jsonl）→ 方案 B（instance/<env>/<mcpServer>/calllog.jsonl），仅执行一次
+        if (st != null && !LAYOUT_MIGRATED) {
+            LAYOUT_MIGRATED = true;
+            try {
+                Installer.migrateProviderLayout(root, st.envs);
+            } catch (RuntimeException ignored) {
+            }
+        }
         JsonObject d = new JsonObject();
         d.addProperty("home", normalizePath(Cfg.home().toString()));
         d.addProperty("root", normalizePath(root.toString()));
@@ -254,14 +283,58 @@ public final class SetupMain {
         d.addProperty("javaCmd", normalizePath(Cfg.javaCmd()));
         d.addProperty("mcpJsonPath", normalizePath(Cfg.mcpJsonPath().toString()));
         d.addProperty("qoderPluginMcpJsonPath", normalizePath(Cfg.qoderPluginMcpJsonPath().toString()));
+        // 注册名识别：默认规则前缀命中，或与任一实例的自定义 serverName 完全相等
+        java.util.Set<String> customNames = new java.util.HashSet<>();
+        if (st != null) {
+            for (State.EnvInfo e : st.envs.values()) {
+                for (State.ProviderInfo p : e.providers.values()) {
+                    if (p.serverName != null && !p.serverName.isBlank()) {
+                        customNames.add(p.serverName);
+                    }
+                }
+            }
+        }
         JsonArray registered = new JsonArray();
         McpJson.serverNames(Cfg.mcpJsonPath()).stream()
-                .filter(n -> DbAdapters.all().stream().anyMatch(a -> n.startsWith(a.serverPrefix()))).forEach(registered::add);
+                .filter(n -> customNames.contains(n)
+                        || DbAdapters.all().stream().anyMatch(a -> n.startsWith(a.serverPrefix())))
+                .forEach(registered::add);
         d.add("registeredServers", registered);
         JsonArray qoderPluginRegistered = new JsonArray();
         McpJson.serverNames(Cfg.qoderPluginMcpJsonPath()).stream()
-                .filter(n -> DbAdapters.all().stream().anyMatch(a -> n.startsWith(a.serverPrefix()))).forEach(qoderPluginRegistered::add);
+                .filter(n -> customNames.contains(n)
+                        || DbAdapters.all().stream().anyMatch(a -> n.startsWith(a.serverPrefix())))
+                .forEach(qoderPluginRegistered::add);
         d.add("qoderPluginRegisteredServers", qoderPluginRegistered);
+        // 每个数据库类型的运行时是否已就绪（toolkit + 共享 jlink 运行时；NODE 还需自带 node 运行时）。
+        // 前端据此决定"首次需解压内置资源"提示是否显示。
+        JsonObject runtimeReady = new JsonObject();
+        for (DbAdapter a : DbAdapters.all()) {
+            Path tk = Installer.toolkitPath(root, a.id(), a);
+            boolean ready = Files.isRegularFile(tk);
+            if (a.runtimeKind() == DbAdapter.RuntimeKind.NODE) {
+                Path node = root.resolve(a.id()).resolve(Installer.RUNTIME_DIR_NAME).resolve("node");
+                ready = ready && (Files.isRegularFile(node)
+                        || Files.isRegularFile(node.resolve("node.exe"))
+                        || Files.isRegularFile(node.resolve("node")));
+            }
+            ready = ready && Installer.runtimeJava(root) != null;
+            runtimeReady.addProperty(a.id(), ready);
+        }
+        d.add("runtimeReady", runtimeReady);
+        // 所有客户端（本机平台 + 各 McpTarget）的 mcp.json 配置路径，供系统页统一展示。
+        JsonArray clientPaths = new JsonArray();
+        clientPaths.add(clientPathJson("QoderWork", Cfg.mcpJsonPath()));
+        clientPaths.add(clientPathJson("IDEA Qoder 插件", Cfg.qoderPluginMcpJsonPath()));
+        for (com.dbmcp.mcp.McpTarget t : com.dbmcp.mcp.McpTargets.all()) {
+            Path actual = t.detectActual();
+            Path p = actual != null ? actual
+                    : (t.candidateConfigPaths().isEmpty() ? null : t.candidateConfigPaths().get(0));
+            if (p != null) {
+                clientPaths.add(clientPathJson(t.displayName(), p));
+            }
+        }
+        d.add("mcpClientPaths", clientPaths);
         if (st != null) {
             JsonObject stateJson = GSON.toJsonTree(st).getAsJsonObject();
             if (stateJson.has("root")) {
@@ -279,6 +352,13 @@ public final class SetupMain {
             d.add("state", stateJson);
         }
         return d;
+    }
+
+    private static JsonObject clientPathJson(String name, Path p) {
+        JsonObject o = new JsonObject();
+        o.addProperty("name", name);
+        o.addProperty("path", normalizePath(p.toString()));
+        return o;
     }
 
     // ---------- deploy ----------
@@ -307,6 +387,13 @@ public final class SetupMain {
         String env = str(body, "env");
         if (!Installer.validEnvName(env)) {
             throw new IllegalArgumentException("环境编码不合法：仅小写字母/数字/连字符，字母开头，≤32 位");
+        }
+        String mcpServerRaw = str(body, "mcpServer");
+        final String mcpServer = (mcpServerRaw == null || mcpServerRaw.isBlank())
+                ? adapter.defaultMcpServer() : mcpServerRaw.trim();
+        boolean knownImpl = adapter.mcpServerOptions().stream().anyMatch(o -> o.id().equals(mcpServer));
+        if (!knownImpl) {
+            throw new IllegalArgumentException("未知的 MCP 服务实现：" + mcpServer);
         }
         String host = str(body, "host");
         String user = str(body, "user");
@@ -347,33 +434,52 @@ public final class SetupMain {
         if (user == null || user.isBlank() || password == null || password.isBlank()) {
             throw new IllegalArgumentException("用户名和密码不能为空");
         }
-        List<String> tools = strList(body, "tools");
-        if (!tools.containsAll(adapter.requiredTools())) {
-            throw new IllegalArgumentException("必选工具缺失：" + String.join(",", adapter.requiredTools()));
-        }
-        Installer.writeEnvConfig(root, dbId, env, adapter, url, user.trim(), password);
-
         State st = State.load(root);
         if (st == null) {
             throw new IllegalStateException("未检测到部署状态，请先部署运行时");
         }
-        State.EnvInfo info = st.envs.computeIfAbsent(env, k -> new State.EnvInfo());
-        info.dbType = adapter.id();
+        State.EnvInfo info = st.envs.computeIfAbsent(envKey(dbId, env), k -> new State.EnvInfo());
+
+        // 连接要素（同一连接多个实现共享）：body 提供则更新，否则沿用已有值（追加实现场景）
+        boolean connComplete;
+        if (!isBlank(host) && !isBlank(user) && !isBlank(password)) {
+            info.dbType = adapter.id();
+            info.host = host;
+            info.port = port;
+            info.database = name;
+            info.user = user.trim();
+            info.password = password;
+            info.url = url;
+            connComplete = true;
+        } else {
+            connComplete = !isBlank(info.host) && !isBlank(info.user) && !isBlank(info.password);
+        }
+        if (!connComplete) {
+            throw new IllegalArgumentException("用户名、密码与主机不能为空（首次创建连接时必须填写）");
+        }
         info.aliases = strList(body, "aliases");
-        info.tools = tools;
-        info.host = host;
-        info.port = port;
-        info.database = name;
-        info.user = user.trim();
-        info.password = password;
-        info.url = url;
+
+        // 该实现（provider）的工具与注册名
+        List<String> tools = strList(body, "tools");
+        if (!tools.containsAll(adapter.requiredToolsFor(mcpServer))) {
+            throw new IllegalArgumentException("必选工具缺失：" + String.join(",", adapter.requiredToolsFor(mcpServer)));
+        }
+        State.ProviderInfo p = info.providers.computeIfAbsent(mcpServer, k -> new State.ProviderInfo());
+        if (body.has("serverName")) {
+            String sn = str(body, "serverName");
+            p.serverName = (sn == null || sn.isBlank()) ? null : validateServerName(sn.trim());
+        }
+        p.tools = tools;
+
+        Installer.writeEnvConfig(root, dbId, env, mcpServer, adapter, info.url, info.user, info.password);
         st.save(root);
 
         JsonObject d = new JsonObject();
         d.addProperty("env", env);
         d.addProperty("dbId", dbId);
-        d.addProperty("configPath", Installer.configFile(root, dbId, env, adapter).toString());
-        d.addProperty("url", url);
+        d.addProperty("mcpServer", mcpServer);
+        d.addProperty("configPath", Installer.connectionFile(root, dbId, env, adapter).toString());
+        d.addProperty("url", info.url);
         return d;
     }
 
@@ -418,28 +524,40 @@ public final class SetupMain {
         Path root = requireRoot();
         String dbId = str(body, "dbId");
         String env = str(body, "env");
+        String mcpServerRaw = str(body, "mcpServer");
         if (dbId == null || dbId.isBlank() || env == null || env.isBlank()) {
             return err("dbId 与 env 参数不能为空");
         }
         DbAdapter adapter = DbAdapters.require(dbId);
-        Map<String, String> envVars = resolveEnvVars(root, dbId, env, adapter);
-        TEST_RESULTS.put(env, RUNNING_MARKER);
+        final String mcpServer = (mcpServerRaw == null || mcpServerRaw.isBlank())
+                ? adapter.defaultMcpServer() : mcpServerRaw.trim();
+        State st = State.load(root);
+        State.EnvInfo info = (st != null) ? st.envs.get(envKey(dbId, env)) : null;
+        if (info == null || !info.providers.containsKey(mcpServer)) {
+            return err("环境/实现未配置：" + env + " / " + mcpServer);
+        }
+        Map<String, String> envVars = resolveEnvVars(root, dbId, env, mcpServer, adapter);
+        String tkey = testKey(dbId, env, mcpServer);
+        TEST_RESULTS.put(tkey, RUNNING_MARKER);
         new Thread(() -> {
-            SelfTest.Result r = SelfTest.run(root, dbId, env, adapter, envVars);
-            TEST_RESULTS.put(env, r);
+            SelfTest.Result r = SelfTest.run(root, dbId, env, adapter, envVars, mcpServer);
+            TEST_RESULTS.put(tkey, r);
             try {
-                State st = State.load(root);
-                if (st != null && st.envs.containsKey(env)) {
-                    State.LastTest lt = new State.LastTest();
-                    lt.ok = r.ok;
-                    lt.detail = r.detail;
-                    lt.ts = Instant.now().toString();
-                    st.envs.get(env).lastTest = lt;
-                    st.save(root);
+                State st2 = State.load(root);
+                if (st2 != null) {
+                    State.EnvInfo info2 = st2.envs.get(envKey(dbId, env));
+                    if (info2 != null && info2.providers.containsKey(mcpServer)) {
+                        State.LastTest lt = new State.LastTest();
+                        lt.ok = r.ok;
+                        lt.detail = r.detail;
+                        lt.ts = Instant.now().toString();
+                        info2.providers.get(mcpServer).lastTest = lt;
+                        st2.save(root);
+                    }
                 }
             } catch (Exception ignored) {
             }
-        }, "selftest-" + dbId + "-" + env).start();
+        }, "selftest-" + dbId + "-" + env + "-" + mcpServer).start();
         JsonObject d = new JsonObject();
         d.addProperty("ok", false);
         d.addProperty("detail", "自检已启动，请稍后刷新查看结果");
@@ -447,17 +565,20 @@ public final class SetupMain {
         return d;
     }
 
-    private static Map<String, String> resolveEnvVars(Path root, String dbId, String env, DbAdapter adapter) {
+    private static Map<String, String> resolveEnvVars(Path root, String dbId, String env, String mcpServer, DbAdapter adapter) {
         State st = State.load(root);
-        if (st != null && st.envs.containsKey(env)) {
-            State.EnvInfo info = st.envs.get(env);
-            return adapter.envVars(info.url, info.user, info.password, info.port, info.database);
+        String key = envKey(dbId, env);
+        if (st != null && st.envs.containsKey(key)) {
+            State.EnvInfo info = st.envs.get(key);
+            State.ProviderInfo p = info.providers.get(mcpServer);
+            List<String> tools = p != null ? p.tools : List.of();
+            return adapter.envVars(info.url, info.user, info.password, info.port, info.database, tools);
         }
-        return adapter.envVars("", "", "", adapter.defaultPort(), "");
+        return adapter.envVars("", "", "", adapter.defaultPort(), "", List.of());
     }
 
-    private static JsonObject envTestPoll(String env) {
-        SelfTest.Result r = TEST_RESULTS.get(env);
+    private static JsonObject envTestPoll(String dbId, String env, String mcpServer) {
+        SelfTest.Result r = TEST_RESULTS.get(testKey(dbId, env, mcpServer != null ? mcpServer : ""));
         JsonObject d = new JsonObject();
         if (r == null) {
             d.addProperty("ok", false);
@@ -477,27 +598,78 @@ public final class SetupMain {
         return d;
     }
 
+    /** 读取某实例最近一次自检的实时日志（per-run 独立文件），供前端黑色终端流式展示。 */
+    private static JsonObject envTestLog(String dbId, String env, String mcpServer) {
+        Path root = resolveRoot(null);
+        Path f = SelfTest.liveLogPath(root, dbId, env, mcpServer != null ? mcpServer : "");
+        JsonObject d = new JsonObject();
+        if (f == null || !Files.isRegularFile(f)) {
+            d.add("lines", new JsonArray());
+            return d;
+        }
+        try {
+            List<String> lines = Files.readAllLines(f, StandardCharsets.UTF_8);
+            JsonArray arr = new JsonArray();
+            lines.forEach(arr::add);
+            d.add("lines", arr);
+        } catch (IOException e) {
+            d.add("lines", new JsonArray());
+        }
+        return d;
+    }
+
     // ---------- env register ----------
+
+    /** 校验并返回自定义 MCP Server 名称（复用环境编码规范）。 */
+    private static String validateServerName(String sn) {
+        if (!Installer.validEnvName(sn)) {
+            throw new IllegalArgumentException("MCP Server 名称不合法：小写字母开头，仅小写字母/数字/连字符，≤32 位");
+        }
+        return sn;
+    }
 
     private static JsonObject envRegister(JsonObject body) throws IOException {
         Path root = requireRoot();
         String dbId = str(body, "dbId");
         String env = str(body, "env");
+        String mcpServer = str(body, "mcpServer");
         DbAdapter adapter = DbAdapters.require(dbId);
+        if (mcpServer == null || mcpServer.isBlank()) {
+            mcpServer = adapter.defaultMcpServer();
+        }
         State st = State.load(root);
-        if (st == null || !st.envs.containsKey(env)) {
+        String ekey = envKey(dbId, env);
+        if (st == null || !st.envs.containsKey(ekey)) {
             throw new IllegalStateException("环境未配置：" + env);
         }
-        List<String> tools = st.envs.get(env).tools;
-        List<String> cmd = adapter.buildCommand(root, dbId, env, tools);
-        Map<String, String> envVars = resolveEnvVars(root, dbId, env, adapter);
-        String serverName = adapter.serverPrefix() + env;
+        State.EnvInfo info = st.envs.get(ekey);
+        if (!info.providers.containsKey(mcpServer)) {
+            throw new IllegalStateException("该实现未配置：" + mcpServer);
+        }
+        State.ProviderInfo p = info.providers.get(mcpServer);
+        List<String> tools = p.tools;
+        List<String> cmd = adapter.buildCommand(root, dbId, env, tools, mcpServer);
+        Map<String, String> envVars = resolveEnvVars(root, dbId, env, mcpServer, adapter);
+        // 注册名优先级：本次请求显式传入 > 已保存自定义名 > 默认规则（默认实现=前缀+env；非默认=前缀+env-实现）
+        String serverName = resolveServerName(adapter, env, mcpServer, p, body);
+        // 防同连接下两个实现抢同一连接器名（默认名结构不同不会撞；仅自定义名需校验）
+        for (Map.Entry<String, State.ProviderInfo> other : info.providers.entrySet()) {
+            if (other.getKey().equals(mcpServer)) {
+                continue;
+            }
+            State.ProviderInfo op = other.getValue();
+            if (op.serverName != null && op.serverName.equals(serverName)) {
+                throw new IllegalArgumentException("连接器名 " + serverName + " 已被同连接的实现 " + other.getKey() + " 占用，请换一个");
+            }
+        }
+        p.serverName = serverName;
         JsonObject entry = McpJson.register(Cfg.mcpJsonPath(), serverName, cmd, envVars);
-        st.envs.get(env).registered = true;
+        p.registered = true;
         st.save(root);
         JsonObject d = new JsonObject();
         d.addProperty("serverName", serverName);
         d.addProperty("dbId", dbId);
+        d.addProperty("mcpServer", mcpServer);
         d.addProperty("mcpJsonPath", Cfg.mcpJsonPath().toString());
         d.add("entry", entry);
         return d;
@@ -509,17 +681,42 @@ public final class SetupMain {
         Path root = requireRoot();
         String dbId = str(body, "dbId");
         String env = str(body, "env");
+        String mcpServer = str(body, "mcpServer");
         DbAdapter adapter = DbAdapters.require(dbId);
-        String serverName = adapter.serverPrefix() + env;
-        boolean removedFromMcp = McpJson.remove(Cfg.mcpJsonPath(), serverName);
-        String trashMsg = Trash.moveToTrash(Installer.envDir(root, dbId, env));
         State st = State.load(root);
-        if (st != null) {
-            st.envs.remove(env);
-            st.save(root);
-            for (DbAdapter a : DbAdapters.all()) {
-                SkillService.syncMappings(st, a);
+        if (st == null || !st.envs.containsKey(envKey(dbId, env))) {
+            throw new IllegalStateException("环境未配置：" + env);
+        }
+        State.EnvInfo info = st.envs.get(envKey(dbId, env));
+        boolean removedFromMcp = false;
+        String trashMsg = null;
+        if (mcpServer != null && !mcpServer.isBlank() && info.providers.containsKey(mcpServer)) {
+            // 仅删除单个实现；删除其 mcp 注册 + provider 目录，连接要素保留给其他实现
+            State.ProviderInfo p = info.providers.get(mcpServer);
+            String sn = (p.serverName != null && !p.serverName.isBlank())
+                    ? p.serverName : adapter.defaultServerName(env, mcpServer);
+            removedFromMcp = McpJson.remove(Cfg.mcpJsonPath(), sn);
+            Trash.moveToTrash(Installer.providerDir(root, dbId, env, mcpServer));
+            info.providers.remove(mcpServer);
+            if (info.providers.isEmpty()) {
+                // 连接已无任何实现 → 整连接删除（连接文件 + env 目录）
+                st.envs.remove(envKey(dbId, env));
+                trashMsg = Trash.moveToTrash(Installer.envDir(root, dbId, env));
             }
+        } else {
+            // 删除整个连接（全部实现）
+            for (Map.Entry<String, State.ProviderInfo> pe : info.providers.entrySet()) {
+                State.ProviderInfo p = pe.getValue();
+                String sn = (p.serverName != null && !p.serverName.isBlank())
+                        ? p.serverName : adapter.defaultServerName(env, pe.getKey());
+                removedFromMcp |= McpJson.remove(Cfg.mcpJsonPath(), sn);
+            }
+            st.envs.remove(envKey(dbId, env));
+            trashMsg = Trash.moveToTrash(Installer.envDir(root, dbId, env));
+        }
+        st.save(root);
+        for (DbAdapter a : DbAdapters.all()) {
+            SkillService.syncMappings(st, a);
         }
         JsonObject d = new JsonObject();
         d.addProperty("removedFromMcp", removedFromMcp);
@@ -533,6 +730,10 @@ public final class SetupMain {
         Path root = requireRoot();
         String dbId = query(uri, "dbId");
         String env = query(uri, "env");
+        String mcpServer = query(uri, "mcpServer");
+        if (mcpServer == null || mcpServer.isBlank()) {
+            mcpServer = DbAdapters.require(dbId).defaultMcpServer();
+        }
         int limit = 200;
         try {
             String l = query(uri, "limit");
@@ -542,9 +743,9 @@ public final class SetupMain {
         } catch (NumberFormatException ignored) {
         }
         JsonObject d = new JsonObject();
-        d.addProperty("logPath", Installer.callLog(root, dbId, env).toString());
+        d.addProperty("logPath", Installer.callLog(root, dbId, env, mcpServer).toString());
         JsonArray arr = new JsonArray();
-        Installer.tailCallLog(root, dbId, env, limit).forEach(arr::add);
+        Installer.tailCallLog(root, dbId, env, mcpServer, limit).forEach(arr::add);
         d.add("lines", arr);
         return ok(d);
     }
@@ -555,12 +756,23 @@ public final class SetupMain {
         Path root = requireRoot();
         String dbId = query(uri, "dbId");
         String env = query(uri, "env");
+        String mcpServer = query(uri, "mcpServer");
         DbAdapter adapter = DbAdapters.require(dbId);
+        if (mcpServer == null || mcpServer.isBlank()) {
+            mcpServer = adapter.defaultMcpServer();
+        }
         State st = State.load(root);
-        if (st == null || !st.envs.containsKey(env)) {
+        if (st == null || !st.envs.containsKey(envKey(dbId, env))) {
             throw new IllegalStateException("环境未配置：" + env);
         }
-        return ok(PlatformGuide.guide(root, dbId, env, st.envs.get(env).tools, adapter));
+        State.EnvInfo info = st.envs.get(envKey(dbId, env));
+        if (!info.providers.containsKey(mcpServer)) {
+            throw new IllegalStateException("该实现未配置：" + mcpServer);
+        }
+        State.ProviderInfo p = info.providers.get(mcpServer);
+        String serverName = (p.serverName != null && !p.serverName.isBlank())
+                ? p.serverName : adapter.defaultServerName(env, mcpServer);
+        return ok(PlatformGuide.guide(root, dbId, env, p.tools, mcpServer, serverName, adapter));
     }
 
     // ---------- MCP target registration ----------
@@ -585,6 +797,10 @@ public final class SetupMain {
             JsonArray paths = new JsonArray();
             t.candidateConfigPaths().forEach(p -> paths.add(normalizePath(p.toString())));
             o.add("candidatePaths", paths);
+            Path skill = t.skillDir();
+            if (skill != null) {
+                o.addProperty("skillDir", normalizePath(skill.toString()));
+            }
             Path actual = t.detectActual();
             if (actual != null) o.addProperty("actualPath", normalizePath(actual.toString()));
             try {
@@ -605,22 +821,29 @@ public final class SetupMain {
         return d;
     }
 
-    /** 构造某个 (dbId, env) 实例对应的 MCP server entry + serverName。 */
-    private static Object[] mcpEntryFor(String dbId, String env) {
+    /** 构造某个 (dbId, env, mcpServer) 实例对应的 MCP server entry + serverName。 */
+    private static Object[] mcpEntryFor(String dbId, String env, String mcpServer) {
         Path root = requireRoot();
         State st = State.load(root);
-        if (st == null || !st.envs.containsKey(env)) {
+        if (st == null || !st.envs.containsKey(envKey(dbId, env))) {
             throw new IllegalStateException("环境未配置：" + env);
         }
-        State.EnvInfo info = st.envs.get(env);
+        State.EnvInfo info = st.envs.get(envKey(dbId, env));
         if (!dbId.equals(info.dbType)) {
             throw new IllegalArgumentException("dbId 与环境不匹配");
         }
         DbAdapter adapter = DbAdapters.require(dbId);
-        List<String> cmd = adapter.buildCommand(root, dbId, env, info.tools);
+        if (mcpServer == null || mcpServer.isBlank()) {
+            mcpServer = adapter.defaultMcpServer();
+        }
+        State.ProviderInfo p = info.providers.get(mcpServer);
+        if (p == null) {
+            throw new IllegalStateException("该实现未配置：" + mcpServer);
+        }
+        List<String> cmd = adapter.buildCommand(root, dbId, env, p.tools, mcpServer);
         Map<String, String> envVars = null;
-        try { envVars = resolveEnvVars(root, dbId, env, adapter); } catch (Exception ignored) {}
-        String serverName = adapter.serverPrefix() + env;
+        try { envVars = resolveEnvVars(root, dbId, env, mcpServer, adapter); } catch (Exception ignored) {}
+        String serverName = resolveServerName(adapter, env, mcpServer, p, new JsonObject());
         JsonObject entry = new JsonObject();
         entry.addProperty("command", cmd.get(0));
         JsonArray args = new JsonArray();
@@ -638,14 +861,15 @@ public final class SetupMain {
         String targetId = str(body, "target");
         String dbId = str(body, "dbId");
         String env = str(body, "env");
-        if (targetId == null || dbId == null || env == null) {
-            throw new IllegalArgumentException("target/dbId/env 均不能为空");
+        String mcpServer = str(body, "mcpServer");
+        if (targetId == null || dbId == null || env == null || mcpServer == null) {
+            throw new IllegalArgumentException("target/dbId/env/mcpServer 均不能为空");
         }
         com.dbmcp.mcp.McpTarget target = com.dbmcp.mcp.McpTargets.require(targetId);
         if (!target.writable()) {
             throw new IllegalStateException(target.displayName() + " 不支持一键配置，请使用「复制片段」");
         }
-        Object[] built = mcpEntryFor(dbId, env);
+        Object[] built = mcpEntryFor(dbId, env, mcpServer);
         String serverName = (String) built[0];
         JsonObject entry = (JsonObject) built[1];
         Path cfg = target.detectActual();
@@ -656,6 +880,7 @@ public final class SetupMain {
         JsonObject d = new JsonObject();
         d.addProperty("target", targetId);
         d.addProperty("serverName", serverName);
+        d.addProperty("mcpServer", mcpServer);
         d.addProperty("configPath", normalizePath(cfg.toString()));
         d.addProperty("message", "已注册 " + serverName + " 到 " + target.displayName());
         return d;
@@ -665,9 +890,18 @@ public final class SetupMain {
         String targetId = str(body, "target");
         String dbId = str(body, "dbId");
         String env = str(body, "env");
+        String mcpServer = str(body, "mcpServer");
         com.dbmcp.mcp.McpTarget target = com.dbmcp.mcp.McpTargets.require(targetId);
         DbAdapter adapter = DbAdapters.require(dbId);
-        String serverName = adapter.serverPrefix() + env;
+        if (mcpServer == null || mcpServer.isBlank()) {
+            mcpServer = adapter.defaultMcpServer();
+        }
+        Path root = requireRoot();
+        State st = State.load(root);
+        State.EnvInfo info = (st != null) ? st.envs.get(envKey(dbId, env)) : null;
+        State.ProviderInfo p = (info != null) ? info.providers.get(mcpServer) : null;
+        String serverName = (p != null && p.serverName != null && !p.serverName.isBlank())
+                ? p.serverName : adapter.defaultServerName(env, mcpServer);
         Path cfg = target.detectActual();
         boolean removed = false;
         if (target.cliBased()) {
@@ -679,6 +913,7 @@ public final class SetupMain {
         JsonObject d = new JsonObject();
         d.addProperty("target", targetId);
         d.addProperty("serverName", serverName);
+        d.addProperty("mcpServer", mcpServer);
         d.addProperty("removed", removed);
         d.addProperty("configPath", cfg != null ? normalizePath(cfg.toString()) : null);
         return d;
@@ -688,16 +923,18 @@ public final class SetupMain {
         String targetId = str(body, "target");
         String dbId = str(body, "dbId");
         String env = str(body, "env");
-        if (targetId == null || dbId == null || env == null) {
-            throw new IllegalArgumentException("target/dbId/env 均不能为空");
+        String mcpServer = str(body, "mcpServer");
+        if (targetId == null || dbId == null || env == null || mcpServer == null) {
+            throw new IllegalArgumentException("target/dbId/env/mcpServer 均不能为空");
         }
         com.dbmcp.mcp.McpTarget target = com.dbmcp.mcp.McpTargets.require(targetId);
-        Object[] built = mcpEntryFor(dbId, env);
+        Object[] built = mcpEntryFor(dbId, env, mcpServer);
         String serverName = (String) built[0];
         JsonObject entry = (JsonObject) built[1];
         JsonObject d = new JsonObject();
         d.addProperty("target", targetId);
         d.addProperty("cliBased", target.cliBased());
+        d.addProperty("mcpServer", mcpServer);
         String reg = target.cliRegisterCommand(serverName, entry);
         String unreg = target.cliUnregisterCommand(serverName);
         if (reg != null) d.addProperty("register", reg);
@@ -767,16 +1004,21 @@ public final class SetupMain {
             throw new IllegalArgumentException("target 不能为空");
         }
         target = target.trim();
-        String dbId = str(body, "dbId");
-        DbAdapter adapter = DbAdapters.require(dbId);
         if (!st.skillTargets.contains(target)) {
             st.skillTargets.add(target);
         }
         st.save(root);
-        SkillService.deploy(st, List.of(target), adapter);
+        // 部署到所有已支持的数据库类型（oracle + mysql），不依赖单一 dbId，避免"不支持的数据库类型：null"
+        List<String> deployed = new ArrayList<>();
+        for (DbAdapter a : DbAdapters.all()) {
+            deployed.addAll(SkillService.deploy(st, List.of(target), a));
+        }
         JsonObject d = new JsonObject();
         d.addProperty("target", target);
         d.addProperty("added", true);
+        JsonArray arr = new JsonArray();
+        deployed.forEach(arr::add);
+        d.add("deployed", arr);
         return d;
     }
 
@@ -820,17 +1062,25 @@ public final class SetupMain {
         JsonArray envList = new JsonArray();
         if (st != null && st.envs != null) {
             for (Map.Entry<String, State.EnvInfo> e : st.envs.entrySet()) {
-                JsonObject row = new JsonObject();
-                row.addProperty("env", e.getKey());
-                row.addProperty("dbId", e.getValue().dbType);
-                row.addProperty("registered", e.getValue().registered);
-                for (DbAdapter a : DbAdapters.all()) {
-                    if (a.id().equals(e.getValue().dbType)) {
-                        row.addProperty("serverName", a.serverPrefix() + e.getKey());
-                        break;
-                    }
+                // 组合键 dbId + "/" + env 拆出 dbId 与 env（迁移后键必含 "/"）
+                String key = e.getKey();
+                int slash = key.indexOf('/');
+                String dbId = slash >= 0 ? key.substring(0, slash) : (e.getValue() != null ? e.getValue().dbType : "");
+                String envCode = slash >= 0 ? key.substring(slash + 1) : key;
+                State.EnvInfo info = e.getValue();
+                DbAdapter a = DbAdapters.get(dbId);
+                for (Map.Entry<String, State.ProviderInfo> pe : info.providers.entrySet()) {
+                    String mcpServer = pe.getKey();
+                    State.ProviderInfo p = pe.getValue();
+                    JsonObject row = new JsonObject();
+                    row.addProperty("env", envCode);
+                    row.addProperty("dbId", dbId);
+                    row.addProperty("mcpServer", mcpServer);
+                    row.addProperty("registered", p.registered);
+                    row.addProperty("serverName", (p.serverName != null && !p.serverName.isBlank())
+                            ? p.serverName : (a != null ? a.defaultServerName(envCode, mcpServer) : envCode));
+                    envList.add(row);
                 }
-                envList.add(row);
             }
         }
 
@@ -886,6 +1136,16 @@ public final class SetupMain {
         int qoderPluginMcpRemoved = 0;
         for (DbAdapter a : DbAdapters.all()) {
             qoderPluginMcpRemoved += McpJson.removeByPrefix(Cfg.qoderPluginMcpJsonPath(), a.serverPrefix());
+        }
+        // 兜底移除以自定义名注册的实现（默认名前缀已在上面覆盖；自定义名需显式移除）
+        if (st != null) {
+            for (State.EnvInfo info : st.envs.values()) {
+                for (State.ProviderInfo p : info.providers.values()) {
+                    if (p.serverName != null && !p.serverName.isBlank()) {
+                        McpJson.remove(Cfg.mcpJsonPath(), p.serverName);
+                    }
+                }
+            }
         }
 
         JsonArray skillMsgs = new JsonArray();
@@ -1034,6 +1294,12 @@ public final class SetupMain {
     private static boolean isMac() { return System.getProperty("os.name", "").toLowerCase().contains("mac"); }
 
     private static String openWithDefaultApp(Path path) throws IOException {
+        // 目录在 Windows 上直接用 explorer.exe 打开：必前台弹出窗口；
+        // Desktop.open 对目录在某些宿主进程环境下只在后台打开，用户无感知。
+        if (Files.isDirectory(path) && isWin()) {
+            new ProcessBuilder("explorer.exe", path.toAbsolutePath().toString()).start();
+            return "已在资源管理器中打开：" + normalizePath(path.toString());
+        }
         try {
             if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.OPEN)) {
                 Desktop.getDesktop().open(path.toFile());
@@ -1119,6 +1385,28 @@ public final class SetupMain {
 
     private static String str(JsonObject o, String k) {
         return o.has(k) && !o.get(k).isJsonNull() ? o.get(k).getAsString() : null;
+    }
+
+    /** 跨数据源隔离的 env 槽位键：dbId + "/" + env。envCode 不含 "/"（受 Installer.validEnvName 约束）。 */
+    private static String envKey(String dbId, String env) {
+        return dbId + "/" + env;
+    }
+
+    /** 自检结果缓存键：连接键 + 实现 id（同一连接多实现可并行自检不互相覆盖）。 */
+    private static String testKey(String dbId, String env, String mcpServer) {
+        return envKey(dbId, env) + "#" + (mcpServer == null ? "" : mcpServer);
+    }
+
+    /** 解析某实现的连接器名：body 显式 > 已保存自定义名 > 默认规则（默认实现=前缀+env；非默认=前缀+env-实现）。 */
+    private static String resolveServerName(DbAdapter adapter, String env, String mcpServer, State.ProviderInfo p, JsonObject body) {
+        if (body != null && body.has("serverName")) {
+            String sn = str(body, "serverName");
+            return (sn == null || sn.isBlank()) ? adapter.defaultServerName(env, mcpServer) : validateServerName(sn.trim());
+        }
+        if (p != null && p.serverName != null && !p.serverName.isBlank()) {
+            return p.serverName;
+        }
+        return adapter.defaultServerName(env, mcpServer);
     }
 
     private static boolean isBlank(String s) {

@@ -87,12 +87,12 @@ function autoFillAliasFromEnv(envCode){
 const S = {
   booted: false,
   detect: null,      // {home, root, rootExists, tapDeployed, javaCmd, mcpJsonPath, registeredServers, state:{envs, skillTargets, ...}}
-  adapters: [],      // [{id, displayName, defaultPort, serverPrefix, skillDir, runtimeKind, allTools, requiredTools}]
+  adapters: [],      // [{id, displayName, defaultPort, serverPrefix, skillDir, runtimeKind, allTools, requiredTools, mcpServerOptions}]
   mcpTargets: null,  // [{id, displayName, describe, icon, iconClass, tier, writable, cliBased, detected, candidatePaths, actualPath, existingServers}]
   prefs: { theme:"system", sidebarCollapsed:false, setupCompleted:false, lastEnv:null },
   route: null,
   slideOver: { dbId:null, env:null, tab:"overview", open:false },
-  wizard: { step:1, dbId:null, env:null, alias:"", aliasTouched:false, password:"", pwdLocked:false, host:"", port:"", user:"", serviceOrDatabase:"", jdbcUrl:"", paste:"", tools:[], testResult:null },
+  wizard: { step:1, dbId:null, env:null, alias:"", aliasTouched:false, password:"", pwdLocked:false, host:"", port:"", user:"", serviceOrDatabase:"", jdbcUrl:"", paste:"", tools:[], testResult:null, serverName:"", mcpServer:"" },
   filters: { q:"", dbType:"all", perm:"all", status:"all" },
   cmd: { open:false, q:"", idx:0 },
   modal: null,
@@ -132,14 +132,54 @@ function listEnvs(){
   const out = [];
   for (const code in envs){
     const e = envs[code];
-    out.push({ env:code, dbId:e.dbType, info:e });
+    // 组合键 dbId + "/" + env 拆出 dbId 与 env（迁移后键必含 "/"；旧数据兜底用 info.dbType）
+    const slash = code.indexOf("/");
+    const dbId = slash >= 0 ? code.substring(0, slash) : (e && e.dbType) || "";
+    const envCode = slash >= 0 ? code.substring(slash + 1) : code;
+    const providers = (e && e.providers) || {};
+    const keys = Object.keys(providers);
+    if (keys.length === 0){
+      // 连接存在但暂无任何实现（理论上不应发生）：仅列出连接本身，mcpServer 置空
+      out.push({ env:envCode, dbId, mcpServer:"", info: {
+        dbType:e.dbType, aliases:e.aliases||[], host:e.host, port:e.port, database:e.database,
+        user:e.user, password:e.password, url:e.url, mcpServer:"", tools:[], serverName:"", registered:false, lastTest:null
+      } });
+      continue;
+    }
+    // 方案 B：同一连接可按实现拆成多个 provider，每个 provider 一张卡片、独立注册名
+    for (const mcpServer of keys){
+      const p = providers[mcpServer] || {};
+      out.push({
+        env:envCode, dbId, mcpServer,
+        info: {
+          dbType:e.dbType, aliases:e.aliases||[],
+          host:e.host, port:e.port, database:e.database, user:e.user, password:e.password, url:e.url,
+          mcpServer,
+          tools: p.tools || [], serverName: p.serverName || "", registered: !!p.registered, lastTest: p.lastTest || null
+        }
+      });
+    }
   }
   return out;
 }
-function isRegistered(dbId, env){
-  const pref = (adapter(dbId) || {}).serverPrefix || (dbId + "-");
+/* 默认连接器名（前端侧复算，与后端 DbAdapter.defaultServerName 规则一致）：
+   默认实现=前缀+env；非默认实现=前缀+env-实现 */
+function defaultServerNameFor(a, env, mcpServer){
+  const pref = (a && a.serverPrefix) || (a && a.id) || "";
+  if (!mcpServer) return pref + env;
+  const opts = (a && a.mcpServerOptions) || [];
+  const def = opts.length ? opts[0].id : null;
+  if (def === mcpServer) return pref + env;
+  return pref + env + "-" + mcpServer;
+}
+/* 实例实际使用的 MCP server 名称：已配置自定义名优先，否则按默认规则 */
+function serverNameFor(dbId, env, mcpServer){
+  const x = listEnvs().find(v => v.dbId === dbId && v.env === env && (v.mcpServer||"") === (mcpServer||""));
+  return (x && x.info && x.info.serverName) || defaultServerNameFor(adapter(dbId) || {}, env, mcpServer);
+}
+function isRegistered(dbId, env, mcpServer){
   const list = (S.detect && S.detect.registeredServers) || [];
-  return list.indexOf(pref + env) >= 0;
+  return list.indexOf(serverNameFor(dbId, env, mcpServer)) >= 0;
 }
 function relTime(iso){
   if (!iso) return "";
@@ -161,6 +201,19 @@ function toast(msg, type){
   d.innerHTML = ico + "<span>" + esc(msg) + "</span>";
   root.appendChild(d);
   setTimeout(() => { d.style.opacity="0"; d.style.transform="translateX(12px)"; setTimeout(()=>d.remove(), 200); }, 3200);
+}
+
+/* ---------- 全屏加载遮罩（异步耗时操作期间给用户即时反馈） ---------- */
+function showLoading(msg){
+  hideLoading();
+  const m = document.createElement("div");
+  m.id = "loading-mask";
+  m.className = "loading-mask";
+  m.innerHTML = `<div class="loading-spinner"></div><div class="loading-msg">${esc(msg || "加载中…")}</div>`;
+  document.body.appendChild(m);
+}
+function hideLoading(){
+  const m = $("#loading-mask"); if (m) m.remove();
 }
 
 /* ---------- Theme ---------- */
@@ -217,7 +270,7 @@ function parseHash(){
   const name = seg[0];
   if (name === "setup") return { name:"setup", step: parseInt(seg[1]||"1",10) || 1 };
   if (name === "instances"){
-    if (seg.length >= 3) return { name:"instances", dbId:seg[1], env:seg[2] };
+    if (seg.length >= 3) return { name:"instances", dbId:seg[1], env:seg[2], mcpServer: seg.length >= 4 ? seg[3] : "" };
     return { name:"instances" };
   }
   return { name };
@@ -228,7 +281,7 @@ async function onHash(){
   const r = parseHash();
   S.route = r;
   if (r.name === "instances" && r.dbId && r.env){
-    openSlideOver(r.dbId, r.env);
+    openSlideOver(r.dbId, r.env, r.mcpServer || "");
     renderMain(); // still render list behind
   } else {
     closeSlideOver(true);
@@ -434,13 +487,38 @@ function setupStep1(){
   </div>`;
 }
 
+/* 按所选 MCP server 实现渲染工具勾选清单（实现可自带 allTools/requiredTools，回退适配器级） */
+function toolListHtml(a, srvId, checkedTools){
+  const opts = a.mcpServerOptions || [];
+  const opt = opts.find(o => o.id === srvId) || opts[0] || {};
+  const all = (opt.allTools && opt.allTools.length) ? opt.allTools : (a.allTools || []);
+  const req = (opt.requiredTools && opt.requiredTools.length) ? opt.requiredTools : (a.requiredTools || []);
+  return all.map(t => `<label class="tool ${req.indexOf(t)>=0?'locked':''}">
+    <input type="checkbox" data-tool="${esc(t)}" ${checkedTools.indexOf(t)>=0?'checked':''} ${req.indexOf(t)>=0?'disabled':''}>
+    <span class="mono">${esc(t)}</span>
+    ${req.indexOf(t)>=0?'<span class="tag req">必选</span>':(t.includes("write")||["insert","update","delete"].includes(t)?'<span class="tag danger">写权限</span>':'')}
+  </label>`).join("");
+}
+
 function setupStep2(){
   const w = S.wizard;
-  const a = adapter(w.dbId) || {defaultPort:0, allTools:[], requiredTools:[]};
-  const cur = listEnvs().find(x => x.dbId === w.dbId);
+  const a = adapter(w.dbId) || {defaultPort:0, allTools:[], requiredTools:[], mcpServerOptions:[], serverPrefix:(w.dbId||"")+"-"};
+  // 回填定位：优先同一 (env, mcpServer) 连接器；新增实现（mcpServer 无匹配）时仅按 env 回填连接信息
+  const all = listEnvs().filter(x => x.dbId === w.dbId);
+  const cur = (w.env ? all.find(x => x.env === w.env && (w.mcpServer ? (x.mcpServer||"") === w.mcpServer : true)) : null)
+           || (w.env ? all.find(x => x.env === w.env) : null)
+           || (w.env ? null : all[0]);
   const env = w.env || (cur && cur.env) || "";
   const info = cur && cur.info;
-  const tools = w.tools.length ? w.tools : (info && info.tools) || a.requiredTools.slice();
+  const sameImpl = !!(cur && (cur.mcpServer || "") === (w.mcpServer || ""));
+  const srvOpts = a.mcpServerOptions || [];
+  const curSrvRaw = w.mcpServer || (sameImpl && info && info.mcpServer) || "";
+  const curSrv = srvOpts.some(o => o.id === curSrvRaw) ? curSrvRaw : (srvOpts[0] && srvOpts[0].id) || "";
+  const tools = w.tools.length ? w.tools
+              : (sameImpl && info && info.tools && info.tools.length) ? info.tools
+              : ((srvOpts.find(o => o.id === curSrv) || {}).requiredTools || a.requiredTools || []).slice();
+  const serverNameVal = (sameImpl ? (w.serverName || (info && info.serverName) || "") : "");
+  const defServerName = (a.serverPrefix || (a.id||"") + "-") + (env || "env");
   return `<div class="wizard-split">
     <div>
       <div class="card">
@@ -491,13 +569,21 @@ function setupStep2(){
                  value="${w.pwdLocked?'':esc(w.password || (info && info.password) || '')}"></div>
         <div class="field"><div class="field-label">JDBC URL (可选，Oracle 优先)</div>
           <input class="input mono" id="s2-jdbc" value="${esc(w.jdbcUrl || (info && info.url) || "")}"></div>
+        <div class="field">
+          <div class="field-label"><span>MCP Server 名称 (可选)</span><span class="field-hint">注册到 mcp.json 的连接器名 · 留空使用默认规则</span></div>
+          <input class="input mono" id="s2-servername" placeholder="${esc(defServerName)}" value="${esc(serverNameVal)}">
+        </div>
         <div class="card tight" style="background:var(--bg-inset); margin-top:var(--s4)">
-          <div class="field-label" style="margin-bottom:8px">启用工具（${tools.length} / ${a.allTools.length}）</div>
-          ${a.allTools.map(t => `<label class="tool ${a.requiredTools.indexOf(t)>=0?'locked':''}">
-            <input type="checkbox" data-tool="${esc(t)}" ${tools.indexOf(t)>=0?'checked':''} ${a.requiredTools.indexOf(t)>=0?'disabled':''}>
-            <span class="mono">${esc(t)}</span>
-            ${a.requiredTools.indexOf(t)>=0?'<span class="tag req">必选</span>':(t.includes("write")||["insert","update","delete"].includes(t)?'<span class="tag danger">写权限</span>':'')}
-          </label>`).join("")}
+          <div class="field-label" style="margin-bottom:8px">MCP 服务实现</div>
+          ${srvOpts.length ? srvOpts.map(o => `<label class="tool">
+            <input type="radio" name="mcp-server-impl" value="${esc(o.id)}" data-mcp-server="${esc(o.id)}" ${curSrv===o.id?'checked':''}>
+            <span>${esc(o.displayName)}</span>
+            ${o.description?`<span style="margin-left:auto; font-size:10.5px; color:var(--text-muted); text-align:right">${esc(o.description)}</span>`:''}
+          </label>`).join("") : '<p class="text-mut" style="font-size:11.5px">当前无可选项</p>'}
+        </div>
+        <div class="card tight" id="s2-tools-card" style="background:var(--bg-inset); margin-top:var(--s4)">
+          <div class="field-label" style="margin-bottom:8px">启用工具（${tools.length} / ${((srvOpts.find(o => o.id === curSrv) || srvOpts[0] || {}).allTools || a.allTools || []).length}）</div>
+          ${toolListHtml(a, curSrv, tools)}
         </div>
       </div>
       <div class="flex gap-3 mt-6" style="justify-content:flex-end">
@@ -530,13 +616,13 @@ function setupStep3(){
   return `<div class="wizard-split">
     <div>
       <div class="card">
-        <div class="card-header"><h3>${dbIcon(w.dbId)} 自检与注册</h3></div>
-        <p class="card-desc">对实例 <code>${esc(w.dbId)}/${esc(env||"")}</code> 执行连通自检，通过后可一键注册到 mcp.json。</p>
-        <div id="test-block">${tr ? renderTestResult(tr) : '<p class="text-mut">点击下方「一键自检」开始。</p>'}</div>
-        <div class="flex gap-2 mt-6">
-          <button class="btn primary" id="s3-test">${IC.play} 一键自检</button>
-          <button class="btn secondary" id="s3-register" ${tr && tr.ok ? '' : 'disabled'}>${IC.link} 注册到 mcp.json</button>
-          <button class="btn ghost" id="s3-skip">稍后再注册</button>
+        <div class="card-header"><h3>${dbIcon(w.dbId)} 连通自检</h3></div>
+        <p class="card-desc">进入本步自动执行连通自检；通过后在「完成向导」后自动拉起 mcp 注册弹框。</p>
+        <div id="test-block">${tr ? renderTestResult(tr) : '<p class="text-mut">自检进行中…</p>'}</div>
+        <div class="field-label" style="margin-top:14px">自检日志（实时）</div>
+        <pre id="s3-term" class="term"></pre>
+        <div class="flex gap-2 mt-4">
+          <button class="btn primary" id="s3-test">${IC.play} 重新自检</button>
         </div>
       </div>
       <div class="card">
@@ -554,7 +640,8 @@ function setupStep3(){
       <ul>
         <li>启动 <code>mcp-tap</code> 监听代理</li>
         <li>调用 toolkit 的 ping 工具验证连通</li>
-        <li>通过后注册到 <code>${esc(norm(S.detect && S.detect.mcpJsonPath || ""))}</code></li>
+        <li>右侧终端实时打印请求/响应明细</li>
+        <li>完成后「完成向导」会同步 Skill 并拉起 mcp 注册</li>
       </ul>
       <h4 style="margin-top:16px">自检失败排查</h4>
       <ul>
@@ -571,7 +658,7 @@ function renderTestResult(r){
   if (!r) return "";
   if (r.running) return `<div class="card tight" style="background:var(--info-soft); color:var(--info); display:flex; gap:8px; align-items:center">${IC.play} 自检执行中…</div>`;
   if (r.ok) return `<div class="card tight" style="border-left:3px solid var(--success); background:var(--success-soft)"><div class="flex items-center gap-2" style="color:var(--success); font-weight:500">${IC.check} 自检通过</div><div class="mono" style="font-size:11.5px; margin-top:4px">${esc(r.detail || "")}</div></div>`;
-  return `<div class="card tight" style="border-left:3px solid var(--danger); background:var(--danger-soft)"><div class="flex items-center gap-2" style="color:var(--danger); font-weight:500">${IC.alert} 自检失败</div><div class="mono" style="font-size:11.5px; margin-top:4px">${esc(r.detail || r.error || "未知错误")}</div></div>`;
+  return `<div class="card tight" style="border-left:3px solid var(--danger); background:var(--danger-soft)"><div class="flex items-center gap-2" style="color:var(--danger); font-weight:500">${IC.alert} 自检失败</div><div class="mono" style="font-size:11.5px; margin-top:4px">${esc(r.detail || r.error || "未知错误")}</div>${r.stderrTail ? `<details style="margin-top:6px"><summary style="cursor:pointer; font-size:11px; color:var(--danger)">查看进程日志</summary><pre class="mono" style="font-size:10.5px; margin-top:4px; max-height:200px; overflow:auto; white-space:pre-wrap; background:rgba(0,0,0,.04); padding:6px; border-radius:4px">${esc(r.stderrTail)}</pre></details>` : ""}</div>`;
 }
 
 /* ==========================================================================
@@ -585,13 +672,13 @@ function pageOverview(){
     const t = x.info.lastTest;
     if (t && !t.ok) failed++;
     else ok++;
-    if (!isRegistered(x.dbId, x.env)) unreg++;
+    if (!isRegistered(x.dbId, x.env, x.mcpServer)) unreg++;
   });
   const rows = [];
   envs.forEach(x => {
     const t = x.info.lastTest;
     if (t && !t.ok) rows.push({ sev:"err", x, msg:"自检失败", hint:"重跑自检或改连接参数", action:"retest" });
-    else if (!isRegistered(x.dbId, x.env)) rows.push({ sev:"warn", x, msg:"未注册到 mcp.json", hint:"点注册即可", action:"register" });
+    else if (!isRegistered(x.dbId, x.env, x.mcpServer)) rows.push({ sev:"warn", x, msg:"未注册到 mcp.json", hint:"点注册即可", action:"register" });
   });
   return `<div class="page">
     <div class="page-title-row"><div><div class="page-title">总览</div><div class="page-sub">实例、注册状态与最近一次自检</div></div>
@@ -610,7 +697,7 @@ function pageOverview(){
       <table class="tbl"><thead><tr><th>状态</th><th>实例</th><th>问题</th><th>建议动作</th></tr></thead><tbody>
         ${rows.map(r => `<tr class="clickable" data-open="${esc(r.x.dbId)}/${esc(r.x.env)}">
           <td><span class="badge ${r.sev==='err'?'no':'warn'}">${r.sev==='err'?'异常':'提醒'}</span></td>
-          <td>${dbIcon(r.x.dbId)} ${esc(r.x.dbId)}/${esc(r.x.env)}</td>
+          <td>${dbIcon(r.x.dbId)} ${esc(r.x.dbId)}/${esc(r.x.env)}/${esc(r.x.mcpServer)}</td>
           <td>${esc(r.msg)}</td>
           <td>${esc(r.hint)}</td>
         </tr>`).join("")}
@@ -631,7 +718,7 @@ function pageInstances(){
   const envs = listEnvs().filter(instFilter);
   const f = S.filters;
   return `<div class="page">
-    <div class="page-title-row"><div><div class="page-title">实例</div><div class="page-sub">${listEnvs().length} 个实例 · 每个实例对应一个独立的 MCP 连接器</div></div>
+    <div class="page-title-row"><div><div class="page-title">实例</div><div class="page-sub">${listEnvs().length} 个实现实例 · 同一数据库/环境可按不同 MCP 提供方拆成多个独立连接器</div></div>
       <div class="flex gap-2"><button class="btn secondary sm" id="inst-refresh">${IC.refresh} 刷新</button><button class="btn primary sm" id="inst-add">${IC.plus} 添加实例</button></div>
     </div>
     <div class="filter-bar">
@@ -670,7 +757,7 @@ function instFilter(x){
   if (f.perm === "ro" && isRw) return false;
   if (f.perm === "rw" && !isRw) return false;
   const t = x.info.lastTest;
-  const reg = isRegistered(x.dbId, x.env);
+  const reg = isRegistered(x.dbId, x.env, x.mcpServer);
   if (f.status === "err" && !(t && !t.ok)) return false;
   if (f.status === "unreg" && reg) return false;
   if (f.status === "reg" && !reg) return false;
@@ -684,23 +771,34 @@ function instFilter(x){
 function instCard(x){
   const a = adapter(x.dbId) || {};
   const t = x.info.lastTest;
-  const reg = isRegistered(x.dbId, x.env);
+  const reg = isRegistered(x.dbId, x.env, x.mcpServer);
   const rwTools = ["write-query","insert","update","delete"];
   const isRw = (x.info.tools || []).some(tt => rwTools.includes(tt));
   const alias = (x.info.aliases||[]).join(" · ");
-  return `<div class="inst-card" data-open="${esc(x.dbId)}/${esc(x.env)}">
-    <button class="icon-btn kebab" data-kebab="${esc(x.dbId)}/${esc(x.env)}">${IC.kebab}</button>
+  // 数据库类型名 + 实际 MCP server 实现显示名
+  const dbTypeName = a.displayName || x.dbId || "—";
+  const srvOpts = a.mcpServerOptions || [];
+  const curSrvRaw = x.info.mcpServer || "";
+  const srvOpt = srvOpts.find(o => o.id === curSrvRaw) || srvOpts[0] || {};
+  const srvDisplay = srvOpt.displayName || curSrvRaw || "默认实现";
+  const srvDesc = srvOpt.description || "";
+  return `<div class="inst-card" data-open="${esc(x.dbId)}/${esc(x.env)}/${esc(x.mcpServer)}">
+    <button class="icon-btn kebab" data-kebab="${esc(x.dbId)}/${esc(x.env)}/${esc(x.mcpServer)}">${IC.kebab}</button>
     <div class="head">${dbIcon(x.dbId)}<div class="env">${esc(x.env)}</div>${alias?`<div class="alias">${esc(alias)}</div>`:""}</div>
     <div class="meta">${esc(x.info.host||"—")}:${x.info.port||a.defaultPort||""}${x.info.user?" · "+esc(x.info.user):""}</div>
+    <div class="info-grid">
+      <div class="info-cell"><span class="info-key">数据库</span><span class="info-val">${esc(dbTypeName)}</span></div>
+      <div class="info-cell"><span class="info-key">MCP 实现</span><span class="info-val" title="${esc(srvDesc)}">${esc(srvDisplay)}</span></div>
+    </div>
     <div class="badges">
       <span class="badge ${isRw?'warn':'ok'}"><span class="dot"></span>${isRw?'读写':'只读'}</span>
       <span class="badge ${reg?'ok':'neutral'}">${reg?'已注册':'未注册'}</span>
       ${t?`<span class="badge ${t.ok?'info':'no'}">自检 ${t.ok?'✓':'✗'} · ${esc(relTime(t.ts))}</span>`:""}
     </div>
     <div class="quick">
-      <button class="btn ghost sm" data-retest="${esc(x.dbId)}/${esc(x.env)}">${IC.play} 自检</button>
-      <button class="btn ghost sm" data-config="${esc(x.dbId)}/${esc(x.env)}">${IC.edit} 配置</button>
-      <button class="btn ghost sm" data-mcp="${esc(x.dbId)}/${esc(x.env)}">${IC.link} MCP 注册</button>
+      <button class="btn ghost sm" data-retest="${esc(x.dbId)}/${esc(x.env)}/${esc(x.mcpServer)}">${IC.play} 自检</button>
+      <button class="btn ghost sm" data-config="${esc(x.dbId)}/${esc(x.env)}/${esc(x.mcpServer)}">${IC.edit} 配置</button>
+      <button class="btn ghost sm" data-mcp="${esc(x.dbId)}/${esc(x.env)}/${esc(x.mcpServer)}">${IC.link} MCP 注册</button>
     </div>
   </div>`;
 }
@@ -725,8 +823,9 @@ function pageRuntime(){
     <div class="card">
       <div class="card-header"><h3>${IC.puzzle} 每个数据源的 Skill</h3></div>
       ${S.adapters.map(a => {
+        const custom = listEnvs().filter(v => v.dbId === a.id && v.info.serverName).map(v => v.info.serverName);
         const deployed = targets.some(t => {
-          const has = (S.detect && S.detect.registeredServers || []).some(n => n.startsWith(a.serverPrefix));
+          const has = (S.detect && S.detect.registeredServers || []).some(n => n.startsWith(a.serverPrefix) || custom.indexOf(n) >= 0);
           return has;
         });
         return `<div class="tgt"><span>${dbIcon(a.id)}</span><span class="path">${esc(a.displayName)} → <code>${esc(a.skillDir)}</code></span><span class="badge ${deployed?'ok':'neutral'}">${deployed?'可用':'未启用'}</span></div>`;
@@ -740,6 +839,7 @@ function pageRuntime(){
         <dt>工作目录</dt><dd>${esc(norm(S.detect.root))}</dd><dt></dt>
         <dt>QoderWork mcp.json</dt><dd>${esc(norm(S.detect.mcpJsonPath))}</dd><dt></dt>
         <dt>IDEA Qoder mcp.json</dt><dd>${esc(norm(S.detect.qoderPluginMcpJsonPath))}</dd><dt></dt>
+        ${(S.detect.mcpClientPaths||[]).map(c => `<dt>${esc(c.name)} mcp.json</dt><dd><code>${esc(norm(c.path))}</code></dd><dt></dt>`).join("")}
       </dl>
     </div>
   </div>`;
@@ -754,7 +854,10 @@ function pageDiagnostics(){
       <div class="flex gap-2"><button class="btn secondary sm" id="diag-refresh">${IC.refresh} 刷新</button></div>
     </div>
     <div class="card">
-      <div class="card-header"><h3>选择实例</h3><div class="actions"><select class="select" id="diag-env-sel" style="width:auto"><option value="">全部</option>${listEnvs().map(x => `<option value="${esc(x.dbId)}/${esc(x.env)}">${esc(x.dbId)}/${esc(x.env)}</option>`).join("")}</select></div></div>
+      <div class="card-header"><h3>选择实例</h3></div>
+      <div id="diag-env-blocks" class="env-blocks">
+        ${listEnvs().map(x => `<button class="env-block" data-val="${esc(x.dbId)}/${esc(x.env)}/${esc(x.mcpServer)}"><span class="eb-db">${esc(x.dbId)}</span><span class="eb-sep">/</span><span class="eb-env">${esc(x.env)}</span>${x.mcpServer?`<span class="eb-sep">/</span><span class="eb-srv">${esc(x.mcpServer)}</span>`:""}</button>`).join("")}
+      </div>
       <div id="diag-log" class="mono" style="font-size:12px; max-height:60vh; overflow:auto; padding:8px; background:var(--bg-inset); border-radius:var(--r-sm)"><p class="text-mut">加载中…</p></div>
     </div>
     <div class="card">
@@ -763,21 +866,18 @@ function pageDiagnostics(){
         <button class="btn secondary sm" id="diag-retest-all">${IC.play} 一键自检全部</button>
         <button class="btn secondary sm" id="diag-open-root">${IC.edit} 打开工作目录</button>
         <button class="btn ghost sm" id="diag-reveal-root">${IC.db} 定位工作目录</button>
-        <button class="btn secondary sm" id="diag-open-mcp">${IC.edit} 打开 mcp.json</button>
-        <button class="btn ghost sm" id="diag-reveal-mcp">${IC.db} 定位 mcp.json</button>
-        <button class="btn ghost sm" id="diag-copy-mcp-path">${IC.copy} 复制 mcp.json 路径</button>
       </div>
     </div>
   </div>`;
 }
 function startLogPoll(){
-  const sel = $("#diag-env-sel");
+  const blocks = $$("#diag-env-blocks .env-block");
   const box = $("#diag-log");
   if (!box) return;
+  let diagSel = "";
   const load = async () => {
-    const val = sel && sel.value;
-    if (!val){ box.innerHTML = '<p class="text-mut">选择一个实例查看调用日志。</p>'; return; }
-    const [dbId, env] = val.split("/");
+    if (!diagSel){ box.innerHTML = '<p class="text-mut">选择一个实例查看调用日志。</p>'; return; }
+    const [dbId, env] = diagSel.split("/");
     try {
       const r = await api("/api/env/log?dbId="+encodeURIComponent(dbId)+"&env="+encodeURIComponent(env)+"&limit=200");
       const lines = (r.lines || []).map(l => {
@@ -790,10 +890,16 @@ function startLogPoll(){
       box.innerHTML = '<div class="log-row" style="background:var(--bg-elevated); font-weight:600"><span>时间</span><span>工具</span><span>状态</span><span class="dur">耗时</span><span>详情</span></div>' + (lines.join("") || '<p class="text-mut">暂无日志。</p>');
     } catch (e){ box.innerHTML = '<p style="color:var(--danger)">'+esc(e.message)+'</p>'; }
   };
-  if (sel) sel.onchange = load;
-  load();
+  blocks.forEach(b => b.onclick = () => {
+    diagSel = b.dataset.val;
+    blocks.forEach(x => x.classList.remove("on"));
+    b.classList.add("on");
+    load();
+  });
   if (S.logPollTimer) clearInterval(S.logPollTimer);
   S.logPollTimer = setInterval(load, 6000);
+  // 默认选中第一个实例，进入即见日志（比下拉框更友好）
+  if (blocks[0]) blocks[0].click();
 }
 
 /* ==========================================================================
@@ -813,6 +919,7 @@ function pageSystem(){
         <dt>Tap 代理</dt><dd>${d.tapDeployed?'已部署':'未部署'}</dd><dt></dt>
         <dt>QoderWork mcp.json</dt><dd>${esc(norm(d.mcpJsonPath))}</dd><dt></dt>
         <dt>IDEA Qoder mcp.json</dt><dd>${esc(norm(d.qoderPluginMcpJsonPath))}</dd><dt></dt>
+        ${(d.mcpClientPaths||[]).map(c => `<dt>${esc(c.name)} mcp.json</dt><dd><code>${esc(norm(c.path))}</code></dd><dt></dt>`).join("")}
         <dt>已注册 server</dt><dd>${(d.registeredServers||[]).map(s=>'<code>'+esc(s)+'</code>').join(" · ") || '<span class="text-mut">无</span>'}</dd><dt></dt>
         <dt>prefs.json</dt><dd>${esc(norm(d.root))}/prefs.json · 主题 <code>${esc(S.prefs.theme||"system")}</code></dd><dt></dt>
       </dl>
@@ -836,10 +943,15 @@ function pageSystem(){
 /* ==========================================================================
    Slide-over
    ========================================================================== */
-function openSlideOver(dbId, env){
-  const x = listEnvs().find(e => e.dbId === dbId && e.env === env);
-  if (!x){ toast("实例不存在：" + dbId + "/" + env, "err"); return; }
-  S.slideOver = { dbId, env, tab: S.slideOver.dbId===dbId && S.slideOver.env===env ? S.slideOver.tab : "overview", open:true };
+function openSlideOver(dbId, env, mcpServer){
+  let x = listEnvs().find(e => e.dbId === dbId && e.env === env && (e.mcpServer||"") === (mcpServer||""));
+  if (!x){
+    // 未指定实现（旧链接/未带 mcpServer）时，回退到该连接下首个实现（默认实现优先）
+    const all = listEnvs().filter(e => e.dbId === dbId && e.env === env);
+    if (!all.length){ toast("实例不存在：" + dbId + "/" + env, "err"); return; }
+    x = all[0];
+  }
+  S.slideOver = { dbId, env, mcpServer: x.mcpServer, tab: S.slideOver.dbId===dbId && S.slideOver.env===env && (S.slideOver.mcpServer||"")===(x.mcpServer||"") ? S.slideOver.tab : "overview", open:true };
   $("#overlay").classList.add("on");
   const so = $("#slideover");
   so.innerHTML = renderSlideOver(x);
@@ -858,15 +970,17 @@ function closeSlideOver(silent){
 function renderSlideOver(x){
   const a = adapter(x.dbId) || {};
   const t = x.info.lastTest;
-  const reg = isRegistered(x.dbId, x.env);
+  const reg = isRegistered(x.dbId, x.env, x.mcpServer);
   const rwTools = ["write-query","insert","update","delete"];
   const isRw = (x.info.tools || []).some(tt => rwTools.includes(tt));
   const alias = (x.info.aliases||[]);
+  const srvOpts2 = a.mcpServerOptions || [];
+  const srvOpt2 = srvOpts2.find(o => o.id === x.mcpServer) || srvOpts2[0] || {};
   return `<div class="so-header">
-    <div class="so-title">${dbIcon(x.dbId)}<span>${esc(x.env)}</span><span class="text-mut" style="font-weight:400">· ${esc(a.displayName||x.dbId)}</span>${alias.map(s=>`<span class="chip">${esc(s)}</span>`).join("")}</div>
+    <div class="so-title">${dbIcon(x.dbId)}<span>${esc(x.env)}</span><span class="text-mut" style="font-weight:400">· ${esc(a.displayName||x.dbId)}</span>${srvOpt2.displayName?`<span class="chip mono">${esc(srvOpt2.displayName)}</span>`:""}${alias.map(s=>`<span class="chip">${esc(s)}</span>`).join("")}</div>
     <button class="so-close" id="so-close">${IC.x}</button>
   </div>
-  <div class="so-tabs">${["overview","tools","logs","advanced"].map(k => `<div class="so-tab ${S.slideOver.tab===k?'on':''}" data-tab="${k}">${({overview:"概览",tools:"权限",logs:"日志",advanced:"高级"})[k]}</div>`).join("")}</div>
+  <div class="so-tabs">${["overview","tools","logs"].map(k => `<div class="so-tab ${S.slideOver.tab===k?'on':''}" data-tab="${k}">${({overview:"概览",tools:"权限",logs:"日志"})[k]}</div>`).join("")}</div>
   <div class="so-body">${renderSlideOverTab(x)}</div>
   <div class="so-footer">
     <button class="btn danger-ghost sm" id="so-delete">${IC.trash} 删除实例</button>
@@ -876,10 +990,12 @@ function renderSlideOver(x){
 function renderSlideOverTab(x){
   const a = adapter(x.dbId) || {};
   const t = x.info.lastTest;
-  const reg = isRegistered(x.dbId, x.env);
+  const reg = isRegistered(x.dbId, x.env, x.mcpServer);
   const rwTools = ["write-query","insert","update","delete"];
   const isRw = (x.info.tools || []).some(tt => rwTools.includes(tt));
   if (S.slideOver.tab === "overview"){
+    const srvOpts2 = a.mcpServerOptions || [];
+    const srvOpt2 = srvOpts2.find(o => o.id === x.mcpServer) || srvOpts2[0] || {};
     return `
     <div class="flex gap-2" style="margin-bottom:16px">
       <span class="badge ${isRw?'warn':'ok'}"><span class="dot"></span>${isRw?'读写':'只读'}</span>
@@ -887,51 +1003,60 @@ function renderSlideOverTab(x){
       ${t?`<span class="badge ${t.ok?'info':'no'}">自检 ${t.ok?'通过':'异常'} · ${esc(relTime(t.ts))}</span>`:""}
     </div>
     <dl class="kv">
+      <dt>数据源</dt><dd>${dbIcon(x.dbId)} ${esc(a.displayName||x.dbId)}</dd><dt></dt>
+      <dt>实现</dt><dd>${esc(srvOpt2.displayName || x.mcpServer || "默认实现")}</dd><dt></dt>
       <dt>Host</dt><dd>${esc(x.info.host||"—")}</dd><dt></dt>
       <dt>Port</dt><dd>${esc(x.info.port||a.defaultPort)}</dd><dt></dt>
       <dt>${x.dbId==='oracle'?'Service/SID':'Database'}</dt><dd>${esc(x.info.database||"—")}</dd><dt></dt>
       <dt>User</dt><dd>${esc(x.info.user||"—")}</dd><dt></dt>
       <dt>密码</dt><dd>${x.info.password?'<code>'+ '•'.repeat(Math.min(12, x.info.password.length)) +'</code> <button class="btn ghost sm" id="so-pw-reveal">显示</button>':'<span class="text-mut">未设置</span>'}</dd><dt></dt>
       ${x.info.url?`<dt>JDBC URL</dt><dd>${esc(x.info.url)}</dd><dt></dt>`:""}
-      <dt>连接器名</dt><dd><code>${esc((a.serverPrefix||x.dbId+"-") + x.env)}</code></dd><dt></dt>
+      <dt>连接器名</dt><dd><code>${esc(serverNameFor(x.dbId, x.env, x.mcpServer))}</code></dd><dt></dt>
+      <dt>别名</dt><dd>${(x.info.aliases&&x.info.aliases.length)?x.info.aliases.map(s=>'<span class="chip">'+esc(s)+'</span>').join(" "):'<span class="text-mut">无</span>'}</dd><dt></dt>
     </dl>
     ${t && !t.ok ? `<div class="card tight" style="border-left:3px solid var(--danger); background:var(--danger-soft); margin-top:16px">
       <div class="flex items-center gap-2" style="color:var(--danger); font-weight:500">${IC.alert} 自检失败</div>
       <div class="mono" style="font-size:11.5px; margin-top:4px">${esc(t.detail||"")}</div>
+      ${t.stderrTail ? `<details style="margin-top:6px"><summary style="cursor:pointer; font-size:11px; color:var(--danger)">查看进程日志</summary><pre class="mono" style="font-size:10.5px; margin-top:4px; max-height:240px; overflow:auto; white-space:pre-wrap; background:rgba(0,0,0,.04); padding:6px; border-radius:4px">${esc(t.stderrTail)}</pre></details>` : ""}
     </div>`:""}
     <div class="card tight" style="background:var(--bg-inset); margin-top:16px">
       <div class="field-label" style="margin-bottom:8px">工具集 · ${(x.info.tools||[]).length} 个</div>
       <div class="flex gap-2 flex-wrap">${(x.info.tools||[]).map(tt=>`<span class="chip mono">${esc(tt)}</span>`).join("")||'<span class="text-mut">未启用</span>'}</div>
     </div>
+    <div class="card tight" style="background:var(--bg-inset); margin-top:12px">
+      <div class="field-label">配置目录</div>
+      <div class="mono" style="font-size:11.5px">共享连接：${esc(norm(S.detect.root))}/${esc(x.dbId)}/instance/${esc(x.env)}/</div>
+      <div class="mono" style="font-size:11.5px; margin-top:4px">本实现：${esc(norm(S.detect.root))}/${esc(x.dbId)}/instance/${esc(x.env)}/${esc(x.mcpServer || "<默认实现>")}/</div>
+      <div class="flex gap-2 flex-wrap" style="margin-top:8px">
+        <button class="btn secondary sm" data-so-open-dir>${IC.edit} 打开配置目录</button>
+        <button class="btn ghost sm" data-so-reveal-dir>${IC.db} 在文件夹中显示</button>
+        <button class="btn ghost sm" data-so-copy-json>${IC.copy} 复制 mcp.json 条目</button>
+      </div>
+    </div>
     <div class="flex gap-2 mt-4">
       <button class="btn primary sm" data-so-retest>${IC.play} 一键自检</button>
       ${!reg?`<button class="btn secondary sm" data-so-register>${IC.link} 注册到 mcp.json</button>`:`<button class="btn secondary sm" data-so-unregister>${IC.x} 从 mcp.json 移除</button>`}
       <button class="btn ghost sm" data-so-guide>${IC.link} MCP 注册</button>
+      <button class="btn ghost sm" data-so-add-provider>${IC.plus} 添加另一个实现</button>
     </div>`;
   }
   if (S.slideOver.tab === "tools"){
-    return `<p class="text-mut" style="font-size:12.5px">调整该实例启用的工具集，必选工具无法关闭；写权限工具会二次确认。</p>
-    ${a.allTools.map(tt => `<label class="tool ${(a.requiredTools||[]).includes(tt)?'locked':''}">
-      <input type="checkbox" data-toggle-tool="${esc(tt)}" ${(x.info.tools||[]).includes(tt)?'checked':''} ${(a.requiredTools||[]).includes(tt)?'disabled':''}>
+    const srvOpts = a.mcpServerOptions || [];
+    const srvOpt = srvOpts.find(o => o.id === x.mcpServer) || srvOpts[0] || {};
+    const allT = (srvOpt.allTools && srvOpt.allTools.length) ? srvOpt.allTools : (a.allTools || []);
+    const reqT = (srvOpt.requiredTools && srvOpt.requiredTools.length) ? srvOpt.requiredTools : (a.requiredTools || []);
+    return `<p class="text-mut" style="font-size:12.5px">调整该连接器（${esc(srvOpt.displayName || x.mcpServer || "默认实现")}）启用的工具集，必选工具无法关闭；写权限工具会二次确认。</p>
+    ${allT.map(tt => `<label class="tool ${reqT.includes(tt)?'locked':''}">
+      <input type="checkbox" data-toggle-tool="${esc(tt)}" ${(x.info.tools||[]).includes(tt)?'checked':''} ${reqT.includes(tt)?'disabled':''}>
       <span class="mono">${esc(tt)}</span>
-      ${(a.requiredTools||[]).includes(tt)?'<span class="tag req">必选</span>':(rwTools.includes(tt)?'<span class="tag danger">写权限</span>':'')}
+      ${reqT.includes(tt)?'<span class="tag req">必选</span>':(rwTools.includes(tt)?'<span class="tag danger">写权限</span>':'')}
     </label>`).join("")}
     <div class="flex gap-2 mt-4"><button class="btn primary sm" data-so-save-tools>保存</button></div>`;
   }
   if (S.slideOver.tab === "logs"){
-    return `<div class="mono" id="so-log-box" style="font-size:12px; max-height:60vh; overflow:auto; padding:8px; background:var(--bg-inset); border-radius:var(--r-sm)"><p class="text-mut">加载中…</p></div>`;
+    return `<div id="so-log-box" class="so-log-box"><p class="text-mut">加载中…</p></div>`;
   }
-  return `<p class="text-mut" style="font-size:12.5px">高级操作</p>
-  <div class="flex gap-2 flex-wrap">
-    <button class="btn secondary sm" data-so-guide>${IC.link} MCP 注册</button>
-    <button class="btn secondary sm" data-so-copy-json>${IC.copy} 复制 mcp.json 条目</button>
-    <button class="btn secondary sm" data-so-open-dir>${IC.edit} 打开配置目录</button>
-    <button class="btn ghost sm" data-so-reveal-dir>${IC.db} 在文件夹中显示</button>
-  </div>
-  <div class="card tight mt-6" style="background:var(--bg-inset)">
-    <div class="field-label">配置目录</div>
-    <div class="mono" style="font-size:11.5px">${esc(norm(S.detect.root))}/${esc(x.dbId)}/instance/${esc(x.env)}/</div>
-  </div>`;
+  return `<p class="text-mut" style="font-size:12.5px">无内容</p>`;
 }
 function bindSlideOver(x){
   $("#so-close").onclick = () => closeSlideOver();
@@ -941,13 +1066,13 @@ function bindSlideOver(x){
   const reveal = $("#so-pw-reveal");
   if (reveal) reveal.onclick = () => { const dd = reveal.parentElement; dd.innerHTML = '<code>'+esc(x.info.password)+'</code>'; };
   const retest = $("#slideover [data-so-retest]");
-  if (retest) retest.onclick = () => runSelfTest(x.dbId, x.env, r => { toast(r.ok?"自检通过":"自检失败", r.ok?"":"err"); $("#slideover").innerHTML = renderSlideOver(x); bindSlideOver(x); refreshDetect(); });
+  if (retest) retest.onclick = () => runSelfTest(x.dbId, x.env, x.mcpServer, r => { toast(r.ok?"自检通过":"自检失败", r.ok?"":"err"); $("#slideover").innerHTML = renderSlideOver(x); bindSlideOver(x); refreshDetect(); });
   const reg = $("#slideover [data-so-register]");
-  if (reg) reg.onclick = () => registerEnv(x.dbId, x.env);
+  if (reg) reg.onclick = () => registerEnv(x.dbId, x.env, x.mcpServer);
   const unreg = $("#slideover [data-so-unregister]");
-  if (unreg) unreg.onclick = () => unregisterEnv(x.dbId, x.env);
+  if (unreg) unreg.onclick = () => unregisterEnv(x.dbId, x.env, x.mcpServer);
   const guide = $("#slideover [data-so-guide]");
-  if (guide) guide.onclick = () => showMcpRegister(x.dbId, x.env);
+  if (guide) guide.onclick = () => showMcpRegister(x.dbId, x.env, x.mcpServer);
   const saveTools = $("#slideover [data-so-save-tools]");
   if (saveTools) saveTools.onclick = () => saveToolsFor(x);
   const openDir = $("#slideover [data-so-open-dir]");
@@ -956,18 +1081,75 @@ function bindSlideOver(x){
   if (revealDir) revealDir.onclick = () => openPath("env-config-dir", "reveal", { dbId: x.dbId, env: x.env });
   const copyJson = $("#slideover [data-so-copy-json]");
   if (copyJson) copyJson.onclick = () => copyMcpEntry(x);
+  const addProvider = $("#slideover [data-so-add-provider]");
+  if (addProvider) addProvider.onclick = () => openAddProvider(x);
 }
 async function loadSlideOverLog(x){
   const box = $("#so-log-box"); if (!box) return;
   try {
-    const r = await api("/api/env/log?dbId="+encodeURIComponent(x.dbId)+"&env="+encodeURIComponent(x.env)+"&limit=200");
-    const lines = (r.lines || []).map(l => {
+    const r = await api("/api/env/log?dbId="+encodeURIComponent(x.dbId)+"&env="+encodeURIComponent(x.env)+"&mcpServer="+encodeURIComponent(x.mcpServer||"")+"&limit=200");
+    const entries = (r.lines || []).map(l => {
       try { const o = JSON.parse(l); const ok = o.ok !== false;
-        return `<div class="log-row"><span>${esc(o.ts||"")}</span><span>${esc(o.tool||"")}</span><span class="${ok?'st-ok':'st-err'}">${ok?'OK':'ERR'}</span><span class="dur">${o.dur||''}</span><span>${esc((o.sql||o.detail||"").slice(0,120))}</span></div>`;
-      } catch { return '<div class="log-row">'+esc(l)+'</div>'; }
+        const detail = o.sql || o.detail || "";
+        return `<div class="so-log-entry"><div class="so-log-meta"><span class="so-log-ts">${esc(o.ts||"")}</span><span class="${ok?'st-ok':'st-err'}">${ok?'OK':'ERR'}</span><span class="so-log-dur">${o.dur||''}</span></div><pre class="so-log-console">${esc(detail)}</pre></div>`;
+      } catch { return `<div class="so-log-entry"><pre class="so-log-console">${esc(l)}</pre></div>`; }
     });
-    box.innerHTML = (lines.join("") || '<p class="text-mut">暂无日志。</p>');
+    box.innerHTML = (entries.join("") || '<p class="text-mut">暂无日志。</p>');
   } catch (e){ box.innerHTML = '<p style="color:var(--danger)">'+esc(e.message)+'</p>'; }
+}
+
+/* 同一连接（dbId/env）追加另一个 MCP 实现：共享连接配置，独立连接器目录与调用日志 */
+function openAddProvider(x){
+  const a = adapter(x.dbId) || {};
+  const opts = a.mcpServerOptions || [];
+  if (!opts.length){ toast("该数据源仅有内置默认实现，无可追加项", "warn"); return; }
+  const used = listEnvs().filter(v => v.dbId === x.dbId && v.env === x.env).map(v => v.mcpServer);
+  const avail = opts.filter(o => used.indexOf(o.id) < 0);
+  if (!avail.length){
+    toast("已接入该数据源的全部 " + opts.length + " 种实现", "warn");
+    return;
+  }
+  const info = x.info || {};
+  openModal(`<div class="modal-header"><h3>为 ${esc(x.dbId)}/${esc(x.env)} 添加 MCP 实现</h3><button class="so-close" id="m-x">${IC.x}</button></div>
+    <div class="modal-body">
+      <p class="text-mut" style="font-size:12.5px; margin-bottom:12px">
+        连接信息（host / port / 账号 / 口令）在同一环境下共享；新增实现只会创建独立的连接器目录与调用日志，
+        与现有实现互不影响，各自注册为不同的 MCP 连接器名。
+      </p>
+      ${avail.map((o, i) => `<label class="tool">
+        <input type="radio" name="add-provider-opt" value="${esc(o.id)}" ${i === 0 ? "checked" : ""}>
+        <span>${esc(o.displayName || o.id)}</span>
+        ${o.description ? `<span style="margin-left:auto; font-size:10.5px; color:var(--text-muted); text-align:right">${esc(o.description)}</span>` : ''}
+      </label>`).join("")}
+      <div class="card tight mt-4" style="background:var(--bg-inset)">
+        <div class="field-label">将创建</div>
+        <div class="mono" style="font-size:11.5px">${esc(norm(S.detect.root))}/${esc(x.dbId)}/instance/${esc(x.env)}/&lt;实现&gt;/calllog.jsonl</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn secondary" id="m-close">取消</button>
+      <button class="btn primary" id="ap-go">下一步</button>
+    </div>`, {});
+  const close = () => closeModal();
+  $("#m-x").onclick = close;
+  $("#m-close").onclick = close;
+  $("#ap-go").onclick = () => {
+    const sel = $$('input[name="add-provider-opt"]:checked')[0];
+    const srv = sel ? sel.value : (avail[0] && avail[0].id);
+    const opt = avail.find(o => o.id === srv) || {};
+    closeModal();
+    S.wizard = {
+      step:2, dbId:x.dbId, env:x.env,
+      alias:(info.aliases || []).join(" · "),
+      aliasTouched: !!(info.aliases && info.aliases.length),
+      host: info.host || "", port: info.port || "", user: info.user || "",
+      password: info.password || "", pwdLocked: !!info.password,
+      serviceOrDatabase: info.database || "", jdbcUrl: info.url || "",
+      paste:"", tools: (opt.requiredTools || a.requiredTools || []).slice(), testResult:null,
+      serverName:"", mcpServer: srv
+    };
+    navigate("#/setup/2");
+  };
 }
 
 /* ==========================================================================
@@ -990,16 +1172,16 @@ function closeModal(){
   m.classList.remove("wide");
   if (!S.slideOver.open) $("#overlay").classList.remove("on");
   if (opts.restoreSlideOver && opts.restoreArgs){
-    setTimeout(() => openSlideOver(opts.restoreArgs[0], opts.restoreArgs[1]), 220);
+    setTimeout(() => openSlideOver(opts.restoreArgs[0], opts.restoreArgs[1], opts.restoreArgs[2] || ""), 220);
   }
 }
 
 async function deleteInstanceConfirm(x){
-  openModal(`<div class="modal-header"><h3>删除实例 · ${esc(x.dbId)}/${esc(x.env)}</h3><button class="so-close" id="m-x">${IC.x}</button></div>
+  openModal(`<div class="modal-header"><h3>删除实例 · ${esc(x.dbId)}/${esc(x.env)}/${esc(x.mcpServer)}</h3><button class="so-close" id="m-x">${IC.x}</button></div>
   <div class="modal-body">
     <p class="text-mut">将执行：</p>
     <ul>
-      <li>从 <code>${esc(norm(S.detect.mcpJsonPath))}</code> 移除 <code>${esc((adapter(x.dbId)||{}).serverPrefix + x.env)}</code></li>
+      <li>从 <code>${esc(norm(S.detect.mcpJsonPath))}</code> 移除 <code>${esc(serverNameFor(x.dbId, x.env, x.mcpServer))}</code></li>
       <li>把配置目录 <code>${esc(norm(S.detect.root))}/${esc(x.dbId)}/instance/${esc(x.env)}/</code> 移入回收站</li>
       <li>更新 state.json 与 environments.md</li>
     </ul>
@@ -1015,8 +1197,8 @@ async function deleteInstanceConfirm(x){
   $("#m-cancel").onclick = closeModal;
   $("#m-ok").onclick = async () => {
     try {
-      await api("/api/env/delete", { dbId:x.dbId, env:x.env });
-      toast("已删除 " + x.dbId + "/" + x.env);
+      await api("/api/env/delete", { dbId:x.dbId, env:x.env, mcpServer:x.mcpServer });
+      toast("已删除 " + x.dbId + "/" + x.env + (x.mcpServer ? "/" + x.mcpServer : ""));
       closeModal();
       closeSlideOver();
       await refreshDetect();
@@ -1029,7 +1211,7 @@ async function showResetPreview(){
   let p;
   try { p = await api("/api/reset/preview"); }
   catch (e){ toast("预览失败：" + e.message, "err"); return; }
-  const envs = (p.envs||[]).map(x => `<li>${esc(x.dbId)}/${esc(x.env)} ${x.registered?'<span class="badge ok">已注册</span>':'<span class="badge neutral">未注册</span>'}</li>`).join("") || '<li class="text-mut">无</li>';
+  const envs = (p.envs||[]).map(x => `<li>${esc(x.dbId)}/${esc(x.env)}/${esc(x.mcpServer)} ${x.registered?'<span class="badge ok">已注册</span>':'<span class="badge neutral">未注册</span>'}</li>`).join("") || '<li class="text-mut">无</li>';
   const servers = (p.mcpServersToRemove||[]).map(s => `<li><code>${esc(s)}</code></li>`).join("") || '<li class="text-mut">无</li>';
   const qplugin = (p.qoderPluginServersToRemove||[]).map(s => `<li><code>${esc(s)}</code></li>`).join("") || '<li class="text-mut">无</li>';
   const skills = (p.skillDirsToTrash||[]).map(s => `<li><code>${esc(s)}</code></li>`).join("") || '<li class="text-mut">无</li>';
@@ -1110,10 +1292,10 @@ function targetToCard(t, serverName){
   };
 }
 
-function getMcpPlatforms(dbId, env){
+function getMcpPlatforms(dbId, env, mcpServer){
   const d = S.detect || {};
   const a = adapter(dbId) || {};
-  const serverName = (a.serverPrefix || dbId + "-") + env;
+  const serverName = serverNameFor(dbId, env, mcpServer);
   const reg = (d.registeredServers || []);
   const qReg = (d.qoderPluginRegisteredServers || []);
   return [
@@ -1132,12 +1314,12 @@ function getMcpPlatforms(dbId, env){
   ];
 }
 
-function buildMcpEntryPreview(dbId, env){
+function buildMcpEntryPreview(dbId, env, mcpServer){
   const a = adapter(dbId) || {};
-  const x = listEnvs().find(v => v.dbId === dbId && v.env === env);
+  const x = listEnvs().find(v => v.dbId === dbId && v.env === env && (v.mcpServer||"") === (mcpServer||""));
   const info = (x && x.info) || {};
   const root = norm(S.detect.root || "");
-  const serverName = (a.serverPrefix || dbId + "-") + env;
+  const serverName = serverNameFor(dbId, env, mcpServer);
   if (dbId === "oracle"){
     return {
       [serverName]: {
@@ -1179,24 +1361,24 @@ function highlightJson(obj){
     .replace(/:\s(\d+)/g, ': <span class="mcp-snippet-num">$1</span>');
 }
 
-async function showMcpRegister(dbId, env){
+async function showMcpRegister(dbId, env, mcpServer){
   const reopenSlideOver = S.slideOver.open;
   if (reopenSlideOver) closeSlideOver(true);
   const a = adapter(dbId) || {};
-  const serverName = (a.serverPrefix || dbId + "-") + env;
+  const serverName = serverNameFor(dbId, env, mcpServer);
   await loadMcpTargets();
   const manualItem = { id:"__manual", type:"manual", name:"通用 · 手动接入", cls:"generic", letter:"{}", tier:"manual",
     note:"把 server 定义贴到你的客户端配置里即可，适配任意 MCP 兼容客户端" };
   let allItems = [];
   function rebuildAllItems(){
-    const platforms = getMcpPlatforms(dbId, env);
+    const platforms = getMcpPlatforms(dbId, env, mcpServer);
     const targetCards = (S.mcpTargets || []).map(t => targetToCard(t, serverName));
     allItems = [...platforms, ...targetCards, manualItem];
   }
   rebuildAllItems();
   const firstUnreg = allItems.find(p => p.type === "primary" && !(p.registeredList && p.registeredList.indexOf(serverName) >= 0));
   const st = { selected: (firstUnreg || allItems[0]).id, cliCommands: {} };
-  const entryPreview = buildMcpEntryPreview(dbId, env);
+  const entryPreview = buildMcpEntryPreview(dbId, env, mcpServer);
   const fragJson = () => JSON.stringify(entryPreview, null, 2);
   const fullJson = () => JSON.stringify({mcpServers: entryPreview}, null, 2);
 
@@ -1208,7 +1390,7 @@ async function showMcpRegister(dbId, env){
     <aside class="mcp-nav" id="mcp-nav"></aside>
     <section class="mcp-detail" id="mcp-detail"></section>
   </div>
-  <div class="modal-footer"><button class="btn secondary" id="m-close">关闭</button></div>`, { wide:true, restoreSlideOver:reopenSlideOver, restoreArgs:[dbId, env] });
+  <div class="modal-footer"><button class="btn secondary" id="m-close">关闭</button></div>`, { wide:true, restoreSlideOver:reopenSlideOver, restoreArgs:[dbId, env, mcpServer] });
 
   function navDot(p){
     if (p.type === "primary"){
@@ -1265,7 +1447,7 @@ async function showMcpRegister(dbId, env){
     bindDetail(p);
     // CLI 类客户端：异步拉取可执行命令后重渲染
     if (p.type === "target" && p.cliBased && !st.cliCommands[p.id]){
-      api("/api/mcp/commands", { target: p.id, dbId, env }).then(r => {
+      api("/api/mcp/commands", { target: p.id, dbId, env, mcpServer }).then(r => {
         st.cliCommands[p.id] = r;
         if (st.selected === p.id) { body.innerHTML = targetDetail(p); bindDetail(p); }
       }).catch(() => { st.cliCommands[p.id] = {}; });
@@ -1443,7 +1625,7 @@ async function showMcpRegister(dbId, env){
         const act = el.dataset.act;
         if (act === "register" || act === "re-register"){
           el.classList.add("loading");
-          try { await registerEnv(dbId, env); await refreshDetect(); renderNav(); renderDetail(); }
+          try { await registerEnv(dbId, env, mcpServer); await refreshDetect(); renderNav(); renderDetail(); }
           catch (e){ toast(e.message, "err"); }
           finally { el.classList.remove("loading"); }
         } else if (act === "unregister"){
@@ -1451,7 +1633,7 @@ async function showMcpRegister(dbId, env){
         } else if (act === "target-register" || act === "target-re-register"){
           el.classList.add("loading");
           try {
-            const r = await api("/api/mcp/register", { target: p.id, dbId, env });
+            const r = await api("/api/mcp/register", { target: p.id, dbId, env, mcpServer });
             toast(r.message || "已注册");
             await refreshTargetsAndDetect();
             rebuildAllItems();
@@ -1462,7 +1644,7 @@ async function showMcpRegister(dbId, env){
           if (!confirm("确认从 " + p.name + " 移除 " + serverName + "?")) return;
           el.classList.add("loading");
           try {
-            const r = await api("/api/mcp/unregister", { target: p.id, dbId, env });
+            const r = await api("/api/mcp/unregister", { target: p.id, dbId, env, mcpServer });
             toast(r.removed ? "已移除" : "文件里没有该 server");
             S.mcpTargets = null; await loadMcpTargets(true);
             rebuildAllItems();
@@ -1512,7 +1694,7 @@ function buildCmds(){
   const instCmds = [];
   listEnvs().forEach(x => {
     instCmds.push({ g:"实例", label:"实例 · " + x.dbId + "/" + x.env, run:() => navigate("#/instances/"+x.dbId+"/"+x.env) });
-    instCmds.push({ g:"实例", label:"MCP 注册 · " + x.dbId + "/" + x.env, run:() => showMcpRegister(x.dbId, x.env) });
+    instCmds.push({ g:"实例", label:"MCP 注册 · " + x.dbId + "/" + x.env + (x.mcpServer ? "/"+x.mcpServer : ""), run:() => showMcpRegister(x.dbId, x.env, x.mcpServer) });
   });
   const actions = [
     { g:"动作", label:"添加实例", hint:"⌘N", run:() => navigate("#/setup/1") },
@@ -1586,29 +1768,38 @@ function onGlobalKey(e){
 function bindPage(){
   // global: instance-card click opens slide-over (works on overview & instances)
   $$("[data-open]").forEach(el => el.onclick = (e) => {
-    if (e.target.closest("button")) return;
-    const [dbId, env] = el.dataset.open.split("/");
-    navigate("#/instances/" + dbId + "/" + env);
+    // 卡片上的快捷按钮（自检/配置/MCP 注册/⋮）由各自 data-* handler 接管，stopPropagation 已生效；这里再 closest 兜底，避免冒泡后误触卡片本身
+    if (e.target.closest("button, a")) return;
+    const parts = el.dataset.open.split("/");
+    const dbId = parts[0], env = parts[1], mcpServer = parts.slice(2).join("/");
+    // 直接打开抽屉（不等 hashchange）— 旧版仅 navigate，hash 不变时（重复点同一卡）不会触发 onHash → 抽屉不显示
+    if (typeof openSlideOver === "function") openSlideOver(dbId, env, mcpServer);
+    // 同时同步 URL，便于刷新/分享/后退；与 openSlideOver 重复执行幂等
+    const want = "#/instances/" + dbId + "/" + env + (mcpServer ? "/" + mcpServer : "");
+    if (location.hash !== want) navigate(want);
+    else if (typeof renderMain === "function") renderMain();
   });
   $$("[data-retest]").forEach(el => el.onclick = async (e) => {
     e.stopPropagation();
-    const [dbId, env] = el.dataset.retest.split("/");
-    await runSelfTest(dbId, env, r => { toast(r.ok ? "自检通过" : "自检失败", r.ok ? "" : "err"); refreshDetect().then(renderMain); });
+    const parts = el.dataset.retest.split("/");
+    const dbId = parts[0], env = parts[1], mcpServer = parts.slice(2).join("/");
+    await runSelfTest(dbId, env, mcpServer, r => { toast(r.ok ? "自检通过" : "自检失败", r.ok ? "" : "err"); refreshDetect().then(renderMain); });
   });
   $$("[data-reg]").forEach(el => el.onclick = async (e) => {
     e.stopPropagation();
-    const [dbId, env] = el.dataset.reg.split("/");
-    await registerEnv(dbId, env);
+    const parts = el.dataset.reg.split("/");
+    await registerEnv(parts[0], parts[1], parts.slice(2).join("/"));
   });
   $$("[data-mcp]").forEach(el => el.onclick = (e) => {
     e.stopPropagation();
-    const [dbId, env] = el.dataset.mcp.split("/");
-    showMcpRegister(dbId, env);
+    const parts = el.dataset.mcp.split("/");
+    showMcpRegister(parts[0], parts[1], parts.slice(2).join("/"));
   });
   $$("[data-config]").forEach(el => el.onclick = async (e) => {
     e.stopPropagation();
-    const [dbId, env] = el.dataset.config.split("/");
-    const x = listEnvs().find(v => v.dbId === dbId && v.env === env);
+    const parts = el.dataset.config.split("/");
+    const dbId = parts[0], env = parts[1], mcpServer = parts.slice(2).join("/");
+    const x = listEnvs().find(v => v.dbId === dbId && v.env === env && (v.mcpServer||"") === (mcpServer||""));
     const info = x ? x.info : {};
     S.wizard = {
       step:2, dbId, env,
@@ -1617,7 +1808,8 @@ function bindPage(){
       host: info.host || "", port: info.port || "", user: info.user || "",
       password: info.password || "", pwdLocked: !!info.password,
       serviceOrDatabase: info.database || "", jdbcUrl: info.url || "",
-      paste:"", tools: (info.tools||[]).slice(), testResult:null
+      paste:"", tools: (info.tools||[]).slice(), testResult:null,
+      serverName: info.serverName || "", mcpServer: info.mcpServer || ""
     };
     navigate("#/setup/2");
   });
@@ -1643,9 +1835,6 @@ function bindPage(){
   bind("#diag-retest-all", retestAll);
   bind("#diag-open-root", () => openPath("root-dir", "open"));
   bind("#diag-reveal-root", () => openPath("root-dir", "reveal"));
-  bind("#diag-open-mcp", () => openPath("mcp-json", "open"));
-  bind("#diag-reveal-mcp", () => openPath("mcp-json", "reveal"));
-  bind("#diag-copy-mcp-path", () => { navigator.clipboard.writeText(norm(S.detect.mcpJsonPath)); toast("已复制", "info"); });
   bind("#rt-sync", syncMappings);
   bind("#rt-add-target", addSkillTargetPrompt);
   $$("[data-rm-target]").forEach(el => el.onclick = async () => {
@@ -1666,14 +1855,30 @@ function bindPage(){
 
   // Setup wizard
   bind("#s1-cancel", () => navigate("#/overview"));
-  $$("[data-pick-db]").forEach(el => el.onclick = () => { S.wizard.dbId = el.dataset.pickDb; $$("[data-pick-db]").forEach(x => x.classList.toggle("on", x === el)); const nx = $("#s1-next"); if (nx) nx.disabled = false; });
+  $$("[data-pick-db]").forEach(el => el.onclick = () => {
+    // 切换 dbId 时清空上次的连接残留，防止 Oracle 值串到 MySQL 表单（同样反过来）
+    if (S.wizard.dbId !== el.dataset.pickDb){
+      S.wizard = { step:1, dbId:el.dataset.pickDb, env:null, alias:"", aliasTouched:false,
+                   password:"", pwdLocked:false, host:"", port:"", user:"",
+                   serviceOrDatabase:"", jdbcUrl:"", paste:"", tools:[],
+                   testResult:null, serverName:"", mcpServer:"" };
+    } else {
+      S.wizard.dbId = el.dataset.pickDb;
+    }
+    $$("[data-pick-db]").forEach(x => x.classList.toggle("on", x === el));
+    const nx = $("#s1-next"); if (nx) nx.disabled = false;
+  });
   bind("#s1-next", async () => {
     if (!S.wizard.dbId){ toast("请选择一种数据源", "warn"); return; }
+    const rr = (S.detect && S.detect.runtimeReady) || {};
+    const firstTime = !rr[S.wizard.dbId];
+    showLoading(firstTime ? "正在部署运行时（首次需解压内置资源，可能持续数秒）…" : "正在部署运行时…");
     try {
       await api("/api/deploy", { dbId: S.wizard.dbId });
       await refreshDetect();
       navigate("#/setup/2");
     } catch (e){ toast(e.message, "err"); }
+    finally { hideLoading(); }
   });
   bind("#s2-switch-db", () => navigate("#/setup/1"));
   // 实例标识 → 别名预设 联动
@@ -1699,6 +1904,12 @@ function bindPage(){
     const code = e.target.value.trim();
     S.wizard.env = code;
     refreshAliasChips(code);
+    // MCP Server 名称 placeholder 跟随实例标识实时提示默认规则
+    const snp = $("#s2-servername");
+    if (snp){
+      const pref = (adapter(S.wizard.dbId) || {}).serverPrefix || (S.wizard.dbId || "") + "-";
+      snp.placeholder = pref + (code || "env");
+    }
     const aliasInp = $("#s2-alias"); if (!aliasInp) return;
     if (!S.wizard.aliasTouched){
       aliasInp.value = autoFillAliasFromEnv(code);
@@ -1746,6 +1957,25 @@ function bindPage(){
     });
   }
   bind("#s2-back", () => navigate("#/setup/1"));
+  // MCP 服务实现切换 → 按所选实现局部重绘工具勾选区（保留仍可用的勾选，必选项自动补勾）
+  const redrawToolCard = () => {
+    const a = adapter(S.wizard.dbId) || {};
+    const box = $("#s2-tools-card"); if (!box) return;
+    const opts = a.mcpServerOptions || [];
+    const srvIdRaw = S.wizard.mcpServer || (opts[0] && opts[0].id);
+    const opt = opts.find(o => o.id === srvIdRaw) || opts[0] || {};
+    const srvId = opt.id || srvIdRaw;
+    const all = (opt.allTools && opt.allTools.length) ? opt.allTools : (a.allTools || []);
+    const req = (opt.requiredTools && opt.requiredTools.length) ? opt.requiredTools : (a.requiredTools || []);
+    const checked = $$("[data-tool]:checked").map(el => el.dataset.tool).filter(t => all.indexOf(t) >= 0);
+    req.forEach(t => { if (checked.indexOf(t) < 0) checked.push(t); });
+    box.innerHTML = `<div class="field-label" style="margin-bottom:8px">启用工具（${checked.length} / ${all.length}）</div>`
+      + toolListHtml(a, srvId, checked);
+  };
+  $$('input[name="mcp-server-impl"]').forEach(r => r.onchange = () => {
+    S.wizard.mcpServer = r.value;
+    redrawToolCard();
+  });
   bind("#s2-parse", async () => {
     const paste = $("#s2-paste").value;
     if (!paste){ toast("请先粘贴内容", "warn"); return; }
@@ -1788,74 +2018,128 @@ function bindPage(){
     };
     const tools = $$("[data-tool]:checked").map(el => el.dataset.tool);
     body.tools = tools;
+    body.serverName = ($("#s2-servername") ? $("#s2-servername").value.trim() : "");
+    const srvSel = $$('input[name="mcp-server-impl"]').filter(el => el.checked)[0];
+    body.mcpServer = srvSel ? srvSel.value : "";
     try {
       await api("/api/env/config", body);
       S.wizard.env = body.env;
       S.wizard.password = pwdVal;
       S.wizard.tools = tools;
+      S.wizard.serverName = body.serverName;
+      S.wizard.mcpServer = body.mcpServer;
       await refreshDetect();
       navigate("#/setup/3");
     } catch (e){ toast(e.message, "err"); }
   });
-  bind("#s3-back", () => navigate("#/setup/2"));
-  bind("#s3-test", async () => {
-    const env = S.wizard.env;
-    S.wizard.testResult = { running:true };
-    const box = $("#test-block"); if (box) box.innerHTML = renderTestResult(S.wizard.testResult);
-    try {
-      await api("/api/env/test", { dbId:S.wizard.dbId, env });
-      const r = await pollTest(env);
-      S.wizard.testResult = r;
-      const b2 = $("#test-block"); if (b2) b2.innerHTML = renderTestResult(r);
-      const btn = $("#s3-register"); if (btn && r.ok) btn.disabled = false;
-    } catch (e){
-      S.wizard.testResult = { ok:false, detail:e.message };
-      const b2 = $("#test-block"); if (b2) b2.innerHTML = renderTestResult(S.wizard.testResult);
+  bind("#s3-back", () => { S.wizard.s3Token = null; navigate("#/setup/2"); });
+  bind("#s3-test", () => runWizardSelfTest());
+  // 进入第三步自动开始自检（仅对当前实例执行一次，避免重复渲染反复触发）
+  if (S.wizard.step === 3){
+    const tok = S.wizard.dbId + "/" + S.wizard.env + "/" + (S.wizard.mcpServer||"");
+    if (S.wizard.s3Token !== tok){
+      S.wizard.s3Token = tok;
+      runWizardSelfTest();
     }
-  });
-  bind("#s3-register", () => registerEnv(S.wizard.dbId, S.wizard.env));
-  bind("#s3-skip", () => navigate("#/setup/3-done"));
+  }
   bind("#s3-done", async () => {
     S.prefs.setupCompleted = true;
     await savePrefs({ setupCompleted:true, lastEnv: S.wizard.dbId + "/" + S.wizard.env });
-    toast("首次接入完成");
+    try { await api("/api/skill/sync", {}); toast("已同步所有 Skill"); }
+    catch (e){ toast("Skill 同步失败：" + e.message, "err"); }
     navigate("#/instances");
+    await refreshDetect();
+    showMcpRegister(S.wizard.dbId, S.wizard.env, S.wizard.mcpServer);
   });
 }
 
-async function pollTest(env, max=180){
+async function pollTest(dbId, env, mcpServer, max=180){
   for (let i=0; i<max; i++){
     await new Promise(r => setTimeout(r, 500));
     try {
-      const r = await api("/api/env/test/poll?env=" + encodeURIComponent(env));
+      const r = await api("/api/env/test/poll?dbId=" + encodeURIComponent(dbId) + "&env=" + encodeURIComponent(env) + "&mcpServer=" + encodeURIComponent(mcpServer||""));
       if (r && !r.running) return r;
     } catch (e){ /* retry */ }
   }
   return { ok:false, detail:"超时" };
 }
 
-async function runSelfTest(dbId, env, cb){
+async function runSelfTest(dbId, env, mcpServer, cb){
   try {
     toast("自检开始…", "info");
-    await api("/api/env/test", { dbId, env });
-    const r = await pollTest(env);
+    await api("/api/env/test", { dbId, env, mcpServer });
+    const r = await pollTest(dbId, env, mcpServer);
     cb && cb(r);
     await refreshDetect();
     return r;
   } catch (e){ toast(e.message, "err"); cb && cb({ ok:false, detail:e.message }); }
 }
-async function registerEnv(dbId, env){
+
+/** 第三步向导自检：启动实时日志轮询（黑色终端）+ 等待最终结果。 */
+async function runWizardSelfTest(){
+  const dbId = S.wizard.dbId, env = S.wizard.env, mcpServer = S.wizard.mcpServer;
+  const enc = encodeURIComponent;
+  const logUrl = "/api/env/test/log?dbId=" + enc(dbId) + "&env=" + enc(env) + "&mcpServer=" + enc(mcpServer||"");
+  S.wizard.testResult = { running:true };
+  const block = $("#test-block"); if (block) block.innerHTML = renderTestResult(S.wizard.testResult);
+  const term = $("#s3-term");
+  if (term) term.innerHTML = "";
+  let lastN = 0;
+  const appendLogs = (lines) => {
+    if (!lines) return;
+    // 防御：若期间发生重渲染导致 term 被替换，重新查询（保持引用有效）；
+    // 一旦 term 被重建，lastN 必须归零从整份日志重新渲染，否则会漏掉已存在的行、终端变空白。
+    let el = (term && document.body.contains(term)) ? term : null;
+    if (!el) { el = $("#s3-term"); lastN = 0; }
+    if (!el) return;
+    let advanced = false;
+    for (let i = lastN; i < lines.length; i++){
+      // renderTermLine 返回 HTML 字符串，用 insertAdjacentHTML 插入（之前误用 appendChild 传字符串会抛 TypeError，被 try/catch 静默吞掉，导致终端始终空白）
+      el.insertAdjacentHTML("beforeend", renderTermLine(lines[i]));
+      advanced = true;
+    }
+    if (advanced){ lastN = lines.length; el.scrollTop = el.scrollHeight; }
+  };
+  const pollLog = setInterval(async () => {
+    try { const r = await api(logUrl); appendLogs(r.lines || []); } catch (e){ /* ignore */ }
+  }, 400);
   try {
-    const r = await api("/api/env/register", { dbId, env });
+    await api("/api/env/test", { dbId, env, mcpServer });
+    const r = await pollTest(dbId, env, mcpServer);
+    S.wizard.testResult = r;
+    const b2 = $("#test-block"); if (b2) b2.innerHTML = renderTestResult(r);
+  } catch (e){
+    S.wizard.testResult = { ok:false, detail:e.message };
+    const b2 = $("#test-block"); if (b2) b2.innerHTML = renderTestResult(S.wizard.testResult);
+  } finally {
+    clearInterval(pollLog);
+    // 末次补齐，确保完整日志落盘
+    try { const r = await api(logUrl); appendLogs(r.lines || []); } catch (e){ /* ignore */ }
+  }
+}
+
+/** 自检日志单行着色：请求(>>)青、响应(<<)绿、tap 转发灰、错误红、分隔头黄。 */
+function renderTermLine(line){
+  let cls = "ln";
+  if (line.startsWith(">>")) cls += " req";
+  else if (line.startsWith("<<")) cls += " res";
+  else if (line.indexOf("[tap->") >= 0) cls += " tap";
+  else if (/FAIL|EXCEPTION|ERROR|错误|Exception/.test(line)) cls += " err";
+  else if (line.startsWith("===")) cls += " head";
+  return `<span class="${cls}">${esc(line)}</span>`;
+}
+async function registerEnv(dbId, env, mcpServer){
+  try {
+    const r = await api("/api/env/register", { dbId, env, mcpServer });
     toast("已注册 " + r.serverName);
     await refreshDetect();
     renderMain();
   } catch (e){ toast(e.message, "err"); }
 }
-async function unregisterEnv(dbId, env){
+async function unregisterEnv(dbId, env, mcpServer){
   try {
-    await api("/api/env/delete", { dbId, env });
-    toast("已移除并回收实例 " + dbId + "/" + env);
+    await api("/api/env/delete", { dbId, env, mcpServer });
+    toast("已移除 " + dbId + "/" + env + (mcpServer ? "/" + mcpServer : ""));
     await refreshDetect();
     closeSlideOver();
     renderMain();
@@ -1864,9 +2148,9 @@ async function unregisterEnv(dbId, env){
 async function retestAll(){
   const envs = listEnvs();
   if (!envs.length){ toast("没有可自检的实例", "warn"); return; }
-  toast("排队自检 " + envs.length + " 个实例…", "info");
+  toast("排队自检 " + envs.length + " 个实现…", "info");
   for (const x of envs){
-    try { await api("/api/env/test", { dbId:x.dbId, env:x.env }); await pollTest(x.env, 60); } catch {}
+    try { await api("/api/env/test", { dbId:x.dbId, env:x.env, mcpServer:x.mcpServer }); await pollTest(x.dbId, x.env, x.mcpServer, 60); } catch {}
   }
   await refreshDetect();
   renderMain();
@@ -1876,30 +2160,68 @@ async function syncMappings(){
   try { const r = await api("/api/skill/sync", {}); toast("已同步 " + (r.updated||[]).length + " 份映射"); }
   catch (e){ toast(e.message, "err"); }
 }
-function addSkillTargetPrompt(){
+async function addSkillTargetPrompt(){
+  // 推荐目录 = 与 MCP 注册弹框相同的客户端集合（QoderWork + 各 McpTarget 的技能根目录）
+  const items = [{ name:"QoderWork", dir:"~/.qoderwork/skills" }];
+  try { await loadMcpTargets(true); } catch (e){ /* ignore */ }
+  (S.mcpTargets || []).forEach(t => { if (t.skillDir) items.push({ name: t.displayName, dir: t.skillDir }); });
+  const selected = [];                       // 已选目录（去重、保序）
   openModal(`<div class="modal-header"><h3>新增 Skill 目标目录</h3><button class="so-close" id="m-x">${IC.x}</button></div>
-  <div class="modal-body"><div class="field"><div class="field-label"><span>路径</span><span class="field-hint">例如 ~/.qoderwork/skills</span></div>
-    <input class="input mono" id="m-path" placeholder="C:\\Users\\you\\.qoderwork\\skills">
+  <div class="modal-body">
+    <div class="field"><div class="field-label"><span>路径</span><span class="field-hint">agent 技能根目录，可手动输入后点"添加此路径"</span></div>
+      <div class="flex gap-2"><input class="input mono" id="m-path" placeholder="C:\\Users\\you\\.qoderwork\\skills" style="flex:1; min-width:0"><button class="btn secondary sm" id="m-add-path">添加此路径</button></div>
+    </div>
+    <div class="field-label" style="margin-top:16px">常用客户端（可多选，点击切换）</div>
+    <div class="flex gap-2 flex-wrap sk-clients">${items.map(it => `<button class="btn ghost sm sk-client" data-skilldir="${esc(it.dir)}">${esc(it.name)}</button>`).join("")}</div>
+    <div class="field-label" style="margin-top:16px">已选目录（<span id="m-sel-count">0</span>）</div>
+    <div id="m-sel" class="sel-dir-list"></div>
   </div>
-  <div class="field-label" style="margin-top:16px">常用推荐</div>
-  <div class="flex gap-2 flex-wrap">
-    <button class="btn ghost sm" data-qpath="~/.qoderwork/skills">QoderWork</button>
-    <button class="btn ghost sm" data-qpath="~/.agents/skills">Agents</button>
-    <button class="btn ghost sm" data-qpath="~/.claude/skills">Claude</button>
-  </div></div>
-  <div class="modal-footer"><button class="btn secondary" id="m-cancel">取消</button><button class="btn primary" id="m-ok">添加</button></div>`);
+  <div class="modal-footer"><button class="btn secondary" id="m-cancel">取消</button><button class="btn primary" id="m-ok" disabled>添加</button></div>`);
   $("#m-x").onclick = closeModal; $("#m-cancel").onclick = closeModal;
-  $$("[data-qpath]").forEach(b => b.onclick = () => $("#m-path").value = b.dataset.qpath);
+  const renderSel = () => {
+    const box = $("#m-sel"); if (!box) return;
+    const cnt = $("#m-sel-count"); if (cnt) cnt.textContent = selected.length;
+    const ok = $("#m-ok"); if (ok) ok.disabled = selected.length === 0;
+    // 同步客户端 chip 的选中态（删除已选块时让对应 chip 取消高亮）
+    $$("[data-skilldir]").forEach(b => b.classList.toggle("on", selected.includes(b.dataset.skilldir)));
+    if (!selected.length){ box.innerHTML = '<p class="text-mut" style="font-size:12px">尚未选择任何目录</p>'; return; }
+    box.innerHTML = selected.map((p,i) => `<div class="sel-dir-block"><span class="sd-path" title="${esc(p)}">${esc(p)}</span><button class="sd-x" data-i="${i}" title="移除">${IC.x}</button></div>`).join("");
+    box.querySelectorAll(".sd-x").forEach(x => x.onclick = () => { selected.splice(Number(x.dataset.i),1); renderSel(); });
+  };
+  // 客户端多选切换
+  $$("[data-skilldir]").forEach(b => b.onclick = () => {
+    const d = b.dataset.skilldir;
+    const idx = selected.indexOf(d);
+    if (idx >= 0) selected.splice(idx,1); else selected.push(d);
+    renderSel();
+  });
+  // 手动输入路径
+  const addTyped = () => {
+    const inp = $("#m-path"); const v = inp.value.trim();
+    if (!v) return;
+    if (!selected.includes(v)) selected.push(v);
+    inp.value = "";
+    renderSel();
+  };
+  $("#m-add-path").onclick = addTyped;
+  $("#m-path").addEventListener("keydown", e => { if (e.key === "Enter"){ e.preventDefault(); addTyped(); } });
+  renderSel();
+  // 确认：逐个目录提交（后端 skillAddTarget 单次仅接受一个 target，故循环调用）
   $("#m-ok").onclick = async () => {
-    const t = $("#m-path").value.trim();
-    if (!t){ toast("请输入路径", "warn"); return; }
-    try { await api("/api/skill/targets", {action:"add", target:t}); toast("已添加"); closeModal(); await refreshDetect(); renderMain(); }
-    catch (e){ toast(e.message, "err"); }
+    if (!selected.length){ toast("请至少选择一个目录", "warn"); return; }
+    const btn = $("#m-ok"); btn.disabled = true; btn.textContent = "添加中…";
+    let okN = 0;
+    for (const p of selected){
+      try { await api("/api/skill/targets", {action:"add", target:p}); okN++; }
+      catch (e){ toast("添加失败：" + p + " " + e.message, "err"); }
+    }
+    toast("已添加 " + okN + " 个目录并部署 Skill");
+    closeModal(); await refreshDetect(); renderMain();
   };
 }
 async function saveToolsFor(x){
   const body = {
-    dbId:x.dbId, env:x.env,
+    dbId:x.dbId, env:x.env, mcpServer:x.mcpServer,
     host:x.info.host, port:x.info.port, user:x.info.user, password:x.info.password,
     service:x.info.database, database:x.info.database, url:x.info.url,
     aliases:x.info.aliases,
@@ -1909,13 +2231,13 @@ async function saveToolsFor(x){
     await api("/api/env/config", body);
     toast("已保存");
     await refreshDetect();
-    $("#slideover").innerHTML = renderSlideOver(listEnvs().find(e => e.dbId===x.dbId && e.env===x.env) || x);
-    bindSlideOver(listEnvs().find(e => e.dbId===x.dbId && e.env===x.env) || x);
+    const nx = listEnvs().find(e => e.dbId===x.dbId && e.env===x.env && (e.mcpServer||"")===(x.mcpServer||"")) || x;
+    $("#slideover").innerHTML = renderSlideOver(nx);
+    bindSlideOver(nx);
   } catch (e){ toast(e.message, "err"); }
 }
 function copyMcpEntry(x){
-  const a = adapter(x.dbId) || {};
-  const name = (a.serverPrefix||x.dbId+"-") + x.env;
+  const name = serverNameFor(x.dbId, x.env, x.mcpServer);
   const stub = { [name]: { command: S.detect.javaCmd, args:["-jar", norm(S.detect.root)+"/tap/mcp-tap.jar"], env:{} } };
   navigator.clipboard.writeText(JSON.stringify(stub, null, 2));
   toast("已复制 mcp.json 条目");

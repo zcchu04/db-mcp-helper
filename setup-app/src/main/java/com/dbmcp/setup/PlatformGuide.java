@@ -23,9 +23,10 @@ public final class PlatformGuide {
     private PlatformGuide() {
     }
 
-    /** 生成指定环境的各平台接入指南（含预填模板）。 */
-    public static JsonObject guide(Path baseDir, String dbId, String env, List<String> tools, DbAdapter adapter) {
-        List<String> cmd = adapter.buildCommand(baseDir, dbId, env, tools);
+    /** 生成指定环境的各平台接入指南（含预填模板）。serverName 为实际注册名（自定义或默认规则）。 */
+    public static JsonObject guide(Path baseDir, String dbId, String env, List<String> tools,
+                                   String mcpServer, String serverName, DbAdapter adapter) {
+        List<String> cmd = adapter.buildCommand(baseDir, dbId, env, tools, mcpServer);
         JsonObject entry = new JsonObject();
         entry.addProperty("command", cmd.get(0));
         JsonArray args = new JsonArray();
@@ -33,7 +34,7 @@ public final class PlatformGuide {
             args.add(cmd.get(i));
         }
         entry.add("args", args);
-        Map<String, String> envVars = adapter.envVars("", "", "", adapter.defaultPort(), "");
+        Map<String, String> envVars = adapter.envVars("", "", "", adapter.defaultPort(), "", List.of());
         if (!envVars.isEmpty()) {
             JsonObject envObj = new JsonObject();
             envVars.forEach(envObj::addProperty);
@@ -42,7 +43,6 @@ public final class PlatformGuide {
 
         JsonObject platformsRoot = loadPlatforms();
         JsonArray out = new JsonArray();
-        String serverName = adapter.serverPrefix() + env;
         for (var el : platformsRoot.getAsJsonArray("platforms")) {
             JsonObject p = el.getAsJsonObject();
             JsonObject item = p.deepCopy();

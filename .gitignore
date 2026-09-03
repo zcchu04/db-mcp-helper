@@ -1,5 +1,6 @@
 # 构建中间产物（jlink 运行时、打包输入、产物）
 dist/
+outputs/
 *.bak-*
 installer/inno-wrapper-generated.iss
 
