@@ -622,7 +622,7 @@ function setupStep3(){
         <div class="field-label" style="margin-top:14px">自检日志（实时）</div>
         <pre id="s3-term" class="term"></pre>
         <div class="flex gap-2 mt-4">
-          <button class="btn primary" id="s3-test">${IC.play} 重新自检</button>
+          <button class="btn primary" id="s3-test"${tr && tr.running ? " disabled" : ""}>${IC.play} 重新自检</button>
         </div>
       </div>
       <div class="card">
@@ -2082,6 +2082,7 @@ async function runWizardSelfTest(){
   const logUrl = "/api/env/test/log?dbId=" + enc(dbId) + "&env=" + enc(env) + "&mcpServer=" + enc(mcpServer||"");
   S.wizard.testResult = { running:true };
   const block = $("#test-block"); if (block) block.innerHTML = renderTestResult(S.wizard.testResult);
+  const testBtn = $("#s3-test"); if (testBtn) testBtn.disabled = true;
   const term = $("#s3-term");
   if (term) term.innerHTML = "";
   let lastN = 0;
@@ -2113,6 +2114,7 @@ async function runWizardSelfTest(){
     const b2 = $("#test-block"); if (b2) b2.innerHTML = renderTestResult(S.wizard.testResult);
   } finally {
     clearInterval(pollLog);
+    const tb = $("#s3-test"); if (tb) tb.disabled = false;
     // 末次补齐，确保完整日志落盘
     try { const r = await api(logUrl); appendLogs(r.lines || []); } catch (e){ /* ignore */ }
   }
