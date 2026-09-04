@@ -46,7 +46,7 @@ public final class SetupMain {
 
     static boolean NO_BROWSER = false;
 
-    /** 浏览器壳心跳最后到达时间；看门狗据此在壳关闭后自动退出。--no-browser 模式不启用看门狗。 */
+    /** 心跳最后到达时间；看门狗据此在客户端关闭后自动退出（两种启动模式均启用）。 */
     private static final java.util.concurrent.atomic.AtomicLong LAST_HEARTBEAT =
             new java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis());
     /** 进行中的重任务计数（deploy 解压）；看门狗在空闲超时退出前会等待其归零，避免中断首次解压。 */
@@ -54,8 +54,8 @@ public final class SetupMain {
             new java.util.concurrent.atomic.AtomicInteger(0);
     /** HTTP 线程池引用（main 中赋值）；退出时显式 shutdownNow，避免非守护空闲线程卡住 JVM。 */
     private static java.util.concurrent.ExecutorService executorRef;
-    /** 空闲超时退出阈值：超过此时长无心跳且无进行中任务则自动退出。 */
-    private static final long HEARTBEAT_TIMEOUT_MS = 3L * 60_000;
+    /** 空闲超时退出阈值：前端每 15 秒发心跳，超过此时长无心跳且无进行中任务则自动退出。 */
+    private static final long HEARTBEAT_TIMEOUT_MS = 60_000;
 
     public static void main(String[] args) {
         for (String a : args) {
@@ -95,9 +95,7 @@ public final class SetupMain {
             server.createContext("/", SetupMain::handle);
             server.start();
             serverRef = server;
-            if (!NO_BROWSER) {
-                startHeartbeatWatchdog();
-            }
+            startHeartbeatWatchdog();
             System.out.println("DB MCP Helper 已启动：" + url);
             openBrowser(url);
         } catch (Throwable t) {
@@ -111,7 +109,7 @@ public final class SetupMain {
         }
     }
 
-    /** 看门狗：周期性检查浏览器壳心跳；超时且无进行中任务则自动退出。仅浏览器模式启用。 */
+    /** 看门狗：周期性检查客户端心跳；超时且无进行中任务则自动退出。两种启动模式均启用。 */
     private static void startHeartbeatWatchdog() {
         java.util.concurrent.ScheduledExecutorService w =
                 java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {

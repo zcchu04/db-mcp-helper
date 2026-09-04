@@ -184,12 +184,12 @@ public final class MySqlAdapter implements DbAdapter {
     @Override
     public List<String> buildCommand(Path baseDir, String dbId, String env, List<String> tools, String mcpServer) {
         String java = Installer.resolveJava(baseDir);
-        Path dbDir = Installer.dbDir(baseDir, dbId);
         boolean win = System.getProperty("os.name", "").toLowerCase().contains("win");
-        Path nodeExe = dbDir.resolve("runtime").resolve("node").resolve(win ? "node.exe" : "node");
+        Path nodeExe = baseDir.resolve(Installer.RUNTIMES_DIR).resolve("node").resolve(win ? "node.exe" : "node");
+        Path implDir = ImplRegistry.implDir(baseDir, dbId, mcpServer);
         Path serverEntry = IMPL_NAGA.equals(mcpServer)
-                ? dbDir.resolve("toolkit").resolve(nagaDirName()).resolve("dist").resolve("index.js")
-                : dbDir.resolve("toolkit").resolve(toolkitFileName()).resolve("build").resolve("index.js");
+                ? implDir.resolve("build").resolve("index.js")
+                : implDir.resolve("build").resolve("index.js");
         return List.of(
                 java, "-jar", baseDir.resolve("tap").resolve(Cfg.TAP_FILE_NAME).toString(),
                 "--log", Installer.callLog(baseDir, dbId, env, mcpServer).toString(), "--",
@@ -201,15 +201,11 @@ public final class MySqlAdapter implements DbAdapter {
         return "mysql_query";
     }
 
-    /** 自检入参按实现分派：benborla29 参数名 sql；naganpm 参数名 query（且仅允许 SELECT）。 */
+    /** 自检入参：两实现的 mysql_query 工具均使用参数名 sql。 */
     @Override
     public JsonObject pingArguments(String mcpServer) {
         JsonObject args = new JsonObject();
-        if (IMPL_NAGA.equals(mcpServer)) {
-            args.addProperty("query", "SELECT 1");
-        } else {
-            args.addProperty("sql", "SELECT 1");
-        }
+        args.addProperty("sql", "SELECT 1");
         return args;
     }
 

@@ -40,6 +40,12 @@ if not "%MYSQL_TOOLKIT_SRC%"=="" (
   )
 )
 
+rem Overlay version-controlled shim (Doris CONNECT_ATTRS patch + env bridging)
+if exist "%RES%\toolkit\mysql\mysql-mcp-server\build" (
+  copy /Y "%BASE%setup-app\src\main\shims\mysql-build-index.js" "%RES%\toolkit\mysql\mysql-mcp-server\build\index.js" >nul
+  echo [OK] MySQL build/index.js shim overlaid
+)
+
 rem Optional Node runtime for MySQL -> runtime/mysql/node (zip extracted / dir copied)
 if not "%NODE_RUNTIME_ZIP%"=="" (
   if exist "%NODE_RUNTIME_ZIP%" (

@@ -138,6 +138,8 @@ public final class DorisAdapter implements DbAdapter {
         env.put("MYSQL_USER", user);
         env.put("MYSQL_PASSWORD", password);
         env.put("MYSQL_DATABASE", db);
+        // 告知 Node.js 入口 shim 修补 mysql2：去掉 CONNECT_ATTRS 握手标志（Doris 不支持）
+        env.put("DB_MCP_DORIS", "1");
         List<String> ts = tools == null ? List.of() : tools;
         if (ts.contains("mysql_insert")) {
             env.put("ALLOW_INSERT_OPERATION", "true");
@@ -154,12 +156,12 @@ public final class DorisAdapter implements DbAdapter {
     @Override
     public List<String> buildCommand(Path baseDir, String dbId, String env, List<String> tools, String mcpServer) {
         String java = Installer.resolveJava(baseDir);
-        Path dorisDir = Installer.dbDir(baseDir, dbId);
         boolean win = System.getProperty("os.name", "").toLowerCase().contains("win");
-        Path nodeExe = dorisDir.resolve("runtime").resolve("node").resolve(win ? "node.exe" : "node");
+        Path nodeExe = baseDir.resolve(Installer.RUNTIMES_DIR).resolve("node").resolve(win ? "node.exe" : "node");
+        Path implDir = ImplRegistry.implDir(baseDir, dbId, mcpServer);
         Path serverEntry = MySqlAdapter.IMPL_NAGA.equals(mcpServer)
-                ? dorisDir.resolve("toolkit").resolve(MySqlAdapter.nagaDirName()).resolve("dist").resolve("index.js")
-                : dorisDir.resolve("toolkit").resolve(toolkitFileName()).resolve("build").resolve("index.js");
+                ? implDir.resolve("build").resolve("index.js")
+                : implDir.resolve("build").resolve("index.js");
         return List.of(
                 java, "-jar", baseDir.resolve("tap").resolve(Cfg.TAP_FILE_NAME).toString(),
                 "--log", Installer.callLog(baseDir, dbId, env, mcpServer).toString(), "--",
@@ -174,11 +176,7 @@ public final class DorisAdapter implements DbAdapter {
     @Override
     public JsonObject pingArguments(String mcpServer) {
         JsonObject args = new JsonObject();
-        if (MySqlAdapter.IMPL_NAGA.equals(mcpServer)) {
-            args.addProperty("query", "SELECT 1");
-        } else {
-            args.addProperty("sql", "SELECT 1");
-        }
+        args.addProperty("sql", "SELECT 1");
         return args;
     }
 

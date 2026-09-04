@@ -668,8 +668,8 @@ function setupStep2(){
           </div>
         </div>
         <div class="field">
-          <div class="field-label"><span>批量粘贴 (可选)</span><span class="field-hint">支持 jdbc URL / 简单 host=... 段落 / export 语句</span></div>
-          <textarea class="textarea" id="s2-paste" placeholder="jdbc:oracle:thin:@//host:1521/svc  或  MYSQL_HOST=... MYSQL_PASSWORD=...">${esc(w.paste)}</textarea>
+          <div class="field-label"><span>批量粘贴 (可选)</span><span class="field-hint">支持 url= / username= / password= 形式的键值对（每行一个，含 spring.datasource.* 前缀亦可）</span></div>
+          <textarea class="textarea" id="s2-paste" placeholder="url=jdbc:oracle:thin:@//host:1521/svc&#10;username=scott&#10;password=tiger">${esc(w.paste)}</textarea>
           <div class="flex gap-2 mt-4"><button class="btn secondary sm" id="s2-parse">解析并填充</button></div>
         </div>
         <div class="row">
@@ -1176,6 +1176,7 @@ function openSlideOver(dbId, env, mcpServer){
   so.innerHTML = renderSlideOver(x);
   so.classList.add("on");
   bindSlideOver(x);
+  if (S.slideOver.tab === "logs") loadSlideOverLog(x);
 }
 function closeSlideOver(silent){
   S.slideOver.open = false;
@@ -1983,6 +1984,8 @@ function onGlobalKey(e){
   }
 }
 
+function closeKebabMenu(){ document.querySelectorAll(".kebab-menu").forEach(m => m.remove()); }
+
 /* ==========================================================================
    Page-level bindings
    ========================================================================== */
@@ -2033,6 +2036,46 @@ function bindPage(){
       serverName: info.serverName || "", mcpServer: info.mcpServer || ""
     };
     navigate("#/setup/2");
+  });
+
+  // kebab menu on instance cards
+  $$("[data-kebab]").forEach(el => el.onclick = (e) => {
+    e.stopPropagation();
+    const parts = el.dataset.kebab.split("/");
+    const dbId = parts[0], env = parts[1], mcpServer = parts.slice(2).join("/");
+    const x = listEnvs().find(v => v.dbId === dbId && v.env === env && (v.mcpServer||"") === (mcpServer||""));
+    if (!x) return;
+    closeKebabMenu();
+    const reg = isRegistered(dbId, env, mcpServer);
+    const card = el.closest(".inst-card");
+    const menu = document.createElement("div");
+    menu.className = "kebab-menu";
+    menu.innerHTML = `
+      <div class="kebab-menu-item" data-km="copy">${IC.copy} 复制 mcp.json 条目</div>
+      <div class="kebab-menu-item" data-km="dir">${IC.db} 在文件夹中显示</div>
+      <div class="kebab-menu-sep"></div>
+      <div class="kebab-menu-item" data-km="reg">${IC.link} ${reg ? "从 mcp.json 移除" : "注册到 mcp.json"}</div>
+      <div class="kebab-menu-sep"></div>
+      <div class="kebab-menu-item danger" data-km="del">${IC.trash} 删除实例</div>
+    `;
+    card.appendChild(menu);
+    menu.querySelectorAll("[data-km]").forEach(item => {
+      item.onclick = (ev) => {
+        ev.stopPropagation();
+        const action = item.dataset.km;
+        closeKebabMenu();
+        if (action === "copy") copyMcpEntry(x);
+        else if (action === "dir") openPath("env-config-dir", "reveal", { dbId, env });
+        else if (action === "reg") { reg ? unregisterEnv(dbId, env, mcpServer) : registerEnv(dbId, env, mcpServer); }
+        else if (action === "del") deleteInstanceConfirm(x);
+      };
+    });
+    setTimeout(() => document.addEventListener("click", function handler(ev) {
+      if (!ev.target.closest(".kebab-menu") && !ev.target.closest("[data-kebab]")) {
+        closeKebabMenu();
+        document.removeEventListener("click", handler);
+      }
+    }), 0);
   });
 
   // topbar cmd button
@@ -2638,6 +2681,7 @@ async function addSkillTargetPrompt(){
   const items = [{ name:"QoderWork", dir:"~/.qoderwork/skills" }];
   try { await loadMcpTargets(true); } catch (e){ /* ignore */ }
   (S.mcpTargets || []).forEach(t => { if (t.skillDir) items.push({ name: t.displayName, dir: t.skillDir }); });
+  const deployed = ((S.detect && S.detect.state && S.detect.state.skillTargets) || []).map(norm);
   const selected = [];                       // 已选目录（去重、保序）
   openModal(`<div class="modal-header"><h3>新增 Skill 目标目录</h3><button class="so-close" id="m-x">${IC.x}</button></div>
   <div class="modal-body">
@@ -2645,7 +2689,10 @@ async function addSkillTargetPrompt(){
       <div class="flex gap-2"><input class="input mono" id="m-path" placeholder="C:\\Users\\you\\.qoderwork\\skills" style="flex:1; min-width:0"><button class="btn secondary sm" id="m-add-path">添加此路径</button></div>
     </div>
     <div class="field-label" style="margin-top:16px">常用客户端（可多选，点击切换）</div>
-    <div class="flex gap-2 flex-wrap sk-clients">${items.map(it => `<button class="btn ghost sm sk-client" data-skilldir="${esc(it.dir)}">${esc(it.name)}</button>`).join("")}</div>
+    <div class="flex gap-2 flex-wrap sk-clients">${items.map(it => {
+      const done = deployed.includes(norm(it.dir));
+      return `<button class="btn ghost sm sk-client${done ? " deployed" : ""}" data-skilldir="${esc(it.dir)}"${done ? " disabled" : ""}>${esc(it.name)}${done ? ' <span class="sk-deployed-tag">已部署</span>' : ""}</button>`;
+    }).join("")}</div>
     <div class="field-label" style="margin-top:16px">已选目录（<span id="m-sel-count">0</span>）</div>
     <div id="m-sel" class="sel-dir-list"></div>
   </div>
@@ -2661,8 +2708,9 @@ async function addSkillTargetPrompt(){
     box.innerHTML = selected.map((p,i) => `<div class="sel-dir-block"><span class="sd-path" title="${esc(p)}">${esc(p)}</span><button class="sd-x" data-i="${i}" title="移除">${IC.x}</button></div>`).join("");
     box.querySelectorAll(".sd-x").forEach(x => x.onclick = () => { selected.splice(Number(x.dataset.i),1); renderSel(); });
   };
-  // 客户端多选切换
+  // 客户端多选切换（已部署的置灰不可选）
   $$("[data-skilldir]").forEach(b => b.onclick = () => {
+    if (b.disabled) return;
     const d = b.dataset.skilldir;
     const idx = selected.indexOf(d);
     if (idx >= 0) selected.splice(idx,1); else selected.push(d);

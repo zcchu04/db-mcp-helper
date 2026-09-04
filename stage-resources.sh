@@ -36,6 +36,12 @@ elif [ -n "$MYSQL_TOOLKIT_SRC" ]; then
   echo "[WARN] MYSQL_TOOLKIT_SRC set but not found: $MYSQL_TOOLKIT_SRC"
 fi
 
+# Overlay version-controlled shim (Doris CONNECT_ATTRS patch + env bridging)
+if [ -d "$RES/toolkit/mysql/mysql-mcp-server/build" ]; then
+  cp -f "$BASE/setup-app/src/main/shims/mysql-build-index.js" "$RES/toolkit/mysql/mysql-mcp-server/build/index.js"
+  echo "[OK] MySQL build/index.js shim overlaid"
+fi
+
 # Optional Node runtime for MySQL -> runtime/mysql/node (zip extracted / dir copied)
 if [ -n "$NODE_RUNTIME_ZIP" ] && [ -e "$NODE_RUNTIME_ZIP" ]; then
   if [ -d "$NODE_RUNTIME_ZIP" ]; then
