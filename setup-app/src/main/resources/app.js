@@ -1310,8 +1310,35 @@ async function loadSlideOverLog(x){
   try {
     const r = await api("/api/env/log?dbId="+encodeURIComponent(x.dbId)+"&env="+encodeURIComponent(x.env)+"&mcpServer="+encodeURIComponent(x.mcpServer||"")+"&limit=200");
     const entries = (r.lines || []).map(l => {
-      try { const o = JSON.parse(l); const ok = o.ok !== false;
-        const detail = o.sql || o.detail || "";
+      try {
+        const o = JSON.parse(l);
+        if (o.msg) {
+          const dir = o.dir || "";
+          const arrow = dir === "in" ? "\u2190 IN" : dir === "out" ? "OUT \u2192" : dir;
+          const dirCls = dir === "in" ? "log-dir-in" : dir === "out" ? "log-dir-out" : "";
+          let summary = "";
+          try {
+            const rpc = JSON.parse(o.msg);
+            if (rpc.method) {
+              summary = rpc.method + (rpc.params && rpc.params.name ? " (" + rpc.params.name + ")" : "");
+            } else if (rpc.result) {
+              const sc = rpc.result.structuredContent;
+              if (sc && typeof sc === "object") {
+                summary = sc.ok !== undefined ? (sc.ok ? "OK" : "ERR") + " " + JSON.stringify(sc).slice(0, 200) : JSON.stringify(sc).slice(0, 200);
+              } else {
+                const txt = (rpc.result.content || [])[0];
+                summary = txt && txt.text ? txt.text.slice(0, 300) : JSON.stringify(rpc.result).slice(0, 200);
+              }
+            } else if (rpc.error) {
+              summary = "ERROR: " + (rpc.error.message || JSON.stringify(rpc.error).slice(0, 200));
+            } else {
+              summary = o.msg.slice(0, 300);
+            }
+          } catch { summary = o.msg.slice(0, 300); }
+          return `<div class="so-log-entry"><div class="so-log-meta"><span class="so-log-ts">${esc(o.ts||"")}</span><span class="log-dir ${dirCls}">${esc(arrow)}</span></div><pre class="so-log-console">${esc(summary)}</pre></div>`;
+        }
+        const ok = o.ok !== false;
+        const detail = o.sql || o.detail || o.msg || "";
         return `<div class="so-log-entry"><div class="so-log-meta"><span class="so-log-ts">${esc(o.ts||"")}</span><span class="${ok?'st-ok':'st-err'}">${ok?'OK':'ERR'}</span><span class="so-log-dur">${o.dur||''}</span></div><pre class="so-log-console">${esc(detail)}</pre></div>`;
       } catch { return `<div class="so-log-entry"><pre class="so-log-console">${esc(l)}</pre></div>`; }
     });

@@ -485,6 +485,9 @@ html[data-theme="dark"] .impl-status-badge.need-runtime{ color:#fb923c; }
 .so-log-meta{ display:flex; align-items:center; gap:var(--s3); padding:6px var(--s3); font-size:11.5px; border-bottom:1px solid var(--border); background:var(--bg-inset); }
 .so-log-meta .so-log-ts{ font-family:var(--font-mono); color:var(--text-secondary); }
 .so-log-meta .so-log-dur{ margin-left:auto; font-family:var(--font-mono); color:var(--text-muted); }
+.log-dir{ font-family:var(--font-mono); font-size:10.5px; font-weight:600; padding:1px 6px; border-radius:3px; letter-spacing:.3px; }
+.log-dir-in{ color:var(--accent); background:rgba(59,158,255,.12); }
+.log-dir-out{ color:var(--success); background:rgba(35,190,120,.12); }
 .so-log-console{ background:#0b0f17; color:#d6e2f0; font-family:var(--font-mono); font-size:11.5px; line-height:1.55; padding:10px 12px; margin:0; white-space:pre-wrap; word-break:break-all; min-height:48px; max-height:260px; overflow:auto; }
 
 /* 新增 Skill 目标目录：客户端多选 + 已选目录元素块（补 .flex-wrap 修复单列溢出滚动条） */
