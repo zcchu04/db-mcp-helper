@@ -380,11 +380,10 @@ jobs:
           df -h .
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
             /usr/local/share/boost /opt/hostedtoolcache /usr/local/.cache \
-            /usr/share/swift /usr/local/share/chromium /usr/local/lib/node_modules \
+            /usr/share/swift /usr/local/share/chromium \
             /opt/google/chrome /opt/microsoft/msedge /usr/share/miniconda \
             /usr/local/aws-cli /usr/local/lib/heroku
           sudo apt-get purge -y --auto-remove \
-            gcc-12 gcc-13 g++-12 g++-13 gfortran-12 gfortran-13 \
             llvm-14 llvm-15 llvm-16 clang-14 clang-15 clang-16 \
             mono-* ghc-* cabal-install-* 2>/dev/null || true
           sudo apt-get clean
