@@ -419,8 +419,26 @@ jobs:
           CARGO_PROFILE_RELEASE_LTO: "false"
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
         run: |
+          echo "=== Disk space before build ==="
+          df -h .
+          echo "=== Bundle directory size ==="
+          du -sh bundle/ 2>/dev/null || echo "(no bundle dir)"
+          ls -la bundle/ 2>/dev/null || true
           npm install
-          npx tauri build
+          set +e
+          npx tauri build 2>&1 | tee /tmp/tauri-build.log
+          build_rc=${PIPESTATUS[0]}
+          set -e
+          if [ $build_rc -ne 0 ]; then
+            echo ""
+            echo "=== BUILD FAILED (exit $build_rc) — last 80 lines ==="
+            tail -80 /tmp/tauri-build.log
+            echo "=== Disk space after failed build ==="
+            df -h .
+            exit $build_rc
+          fi
+          echo "=== Disk space after build ==="
+          df -h .
 
       # ── Upload installer artifacts ──
       - name: Upload installer (Windows)
