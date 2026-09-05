@@ -373,6 +373,17 @@ jobs:
             librsvg2-dev \
             libxdo-dev
 
+      - name: Free disk space (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          echo "=== Disk space BEFORE cleanup ==="
+          df -h .
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost /opt/hostedtoolcache /usr/local/.cache
+          sudo docker image prune -af 2>/dev/null || true
+          echo "=== Disk space AFTER cleanup ==="
+          df -h .
+
       - name: Download core JARs
         uses: actions/download-artifact@v4
         with:
