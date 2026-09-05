@@ -339,6 +339,22 @@ jobs:
           echo "=== Disk space AFTER cleanup ==="
           df -h .
 
+      - name: Free disk space (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Write-Host "=== Disk space BEFORE cleanup ==="
+          Get-PSDrive C | ForEach-Object { Write-Host ("{0:N1} GB free / {1:N1} GB used" -f ($_.Free/1GB), ($_.Used/1GB)) }
+          Remove-Item -Recurse -Force "C:\Program Files\Android" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "C:\Program Files (x86)\Android" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "C:\Program Files\dotnet" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "$env:USERPROFILE\.dotnet" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "C:\hostedtoolcache\windows\Python" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "C:\hostedtoolcache\windows\Ruby" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "$env:USERPROFILE\AppData\Local\Android" -ErrorAction SilentlyContinue
+          Write-Host "=== Disk space AFTER cleanup ==="
+          Get-PSDrive C | ForEach-Object { Write-Host ("{0:N1} GB free / {1:N1} GB used" -f ($_.Free/1GB), ($_.Used/1GB)) }
+
       - name: Download core JARs
         uses: actions/download-artifact@v4
         with:
@@ -468,10 +484,26 @@ jobs:
           CARGO_PROFILE_RELEASE_LTO: "false"
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
         run: |
+          Write-Host "=== Disk space before build ==="
+          Get-PSDrive C | ForEach-Object { Write-Host ("{0:N1} GB free" -f ($_.Free/1GB)) }
           Write-Host "=== Bundle directory ==="
-          Get-ChildItem bundle -Recurse | Measure-Object -Property Length -Sum | ForEach-Object { Write-Host ("{0:N0} MB" -f ($_.Sum / 1MB)) }
+          Get-ChildItem bundle -Recurse -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum | ForEach-Object { Write-Host ("{0:N0} MB" -f ($_.Sum / 1MB)) }
+          if (Test-Path bundle/runtime) {
+            Write-Host "=== JRE runtime size ==="
+            Get-ChildItem bundle/runtime -Recurse -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum | ForEach-Object { Write-Host ("{0:N0} MB" -f ($_.Sum / 1MB)) }
+          }
           npm install
-          npx tauri build
+          $variant = "${{ matrix.variant }}"
+          if ($variant -eq "full") {
+            Write-Host "[INFO] Full variant — building NSIS only to save disk space"
+            npx tauri build --bundles nsis
+          } else {
+            npx tauri build
+          }
+          Write-Host "=== Disk space after build ==="
+          Get-PSDrive C | ForEach-Object { Write-Host ("{0:N1} GB free" -f ($_.Free/1GB)) }
+          Write-Host "=== Build output ==="
+          Get-ChildItem src-tauri/target/release/bundle -Recurse -ErrorAction SilentlyContinue | Select-Object FullName, Length
 
       # ── Build Tauri installer (Unix) ──
       - name: Build Tauri installer (Unix)
@@ -526,10 +558,23 @@ jobs:
           $platform = "${{ matrix.platform }}"
           $bundleDir = "shell/src-tauri/target/release/bundle"
 
-          Get-ChildItem $bundleDir -Recurse -Include "*.exe","*.msi" | ForEach-Object {
+          Write-Host "=== Bundle directory contents ==="
+          if (Test-Path $bundleDir) {
+            Get-ChildItem $bundleDir -Recurse -File | Select-Object FullName, Length | Format-Table -AutoSize
+          } else {
+            Write-Host "[ERROR] Bundle directory not found: $bundleDir"
+            exit 1
+          }
+
+          $installers = Get-ChildItem $bundleDir -Recurse -Include "*.exe","*.msi" -ErrorAction SilentlyContinue
+          if (-not $installers -or $installers.Count -eq 0) {
+            Write-Host "[ERROR] No .exe or .msi files found in $bundleDir"
+            exit 1
+          }
+
+          $installers | ForEach-Object {
             $ext = $_.Extension
             $newName = "db-mcp-helper-$variant-$platform-$version$ext"
-            $newPath = Join-Path $_.DirectoryName $newName
             Rename-Item $_.FullName $newName
             Write-Host "[OK] $($_.Name) -> $newName"
           }
