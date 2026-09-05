@@ -40,28 +40,6 @@ jobs:
       - name: Build setup-app (slim — no embedded resources)
         run: mvn package -DskipTests -q -pl setup-app
 
-      - name: Package slim zip
-        shell: pwsh
-        run: |
-          $version = "${{ env.APP_VERSION }}" -replace '^v',''
-          $slimDir = "dist/slim-staging"
-          New-Item -ItemType Directory -Force -Path $slimDir | Out-Null
-
-          Copy-Item "setup-app/target/db-mcp-setup.jar" "$slimDir/"
-          New-Item -ItemType Directory -Force -Path "$slimDir/tap" | Out-Null
-          Copy-Item "mcp-tap/target/mcp-tap.jar" "$slimDir/tap/"
-
-          @{
-            type = "slim"
-            version = $version
-            helperVersion = $version
-            platform = "win-x64"
-            createdAt = (Get-Date -Format "o")
-          } | ConvertTo-Json | Set-Content "$slimDir/manifest.json" -Encoding UTF8
-
-          Compress-Archive -Path "$slimDir/*" -DestinationPath "dist/db-mcp-helper-slim-win-x64-$version.zip"
-          Write-Host "[OK] slim package created"
-
       - name: Stage core JARs flat
         shell: pwsh
         run: |
@@ -75,13 +53,6 @@ jobs:
           name: core-jars
           path: dist/core-jars/
           retention-days: 7
-
-      - name: Upload slim package
-        uses: actions/upload-artifact@v4
-        with:
-          name: slim-package
-          path: dist/db-mcp-helper-slim-*.zip
-          retention-days: 30
 
   # ─── Build jlink JRE runtime (per-platform for desktop installers) ───
   build-runtime:
@@ -141,32 +112,6 @@ jobs:
           ALL=$(echo "${FULL},${MODS}" | tr ',' '\n' | sort -u | tr '\n' ',' | sed 's/,$//')
           jlink --add-modules "$ALL" --output dist/runtime \
             --strip-debug --no-header-files --no-man-pages --compress 2
-
-      - name: Package JRE runtime zip
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $version = "${{ env.APP_VERSION }}" -replace '^v',''
-          $rtDir = "dist/runtime-staging"
-          New-Item -ItemType Directory -Force -Path $rtDir | Out-Null
-          Copy-Item "dist/runtime" "$rtDir/runtime" -Recurse
-          @{
-            type = "runtime-jre"
-            version = $version
-            helperVersion = $version
-            platform = "${{ matrix.platform }}"
-            runtimeKind = "JAVA_JAR"
-            createdAt = (Get-Date -Format "o")
-          } | ConvertTo-Json | Set-Content "$rtDir/manifest.json" -Encoding UTF8
-          Compress-Archive -Path "$rtDir/*" -DestinationPath "dist/db-mcp-runtime-jre-${{ matrix.platform }}-$version.zip"
-
-      - name: Upload JRE runtime zip
-        if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: runtime-jre-${{ matrix.platform }}
-          path: dist/db-mcp-runtime-jre-*.zip
-          retention-days: 30
 
       - name: Upload raw runtime dir (for desktop installer)
         uses: actions/upload-artifact@v4
@@ -299,79 +244,7 @@ jobs:
           path: dist/db-mcp-impl-${{ matrix.db }}-*.zip
           retention-days: 30
 
-  # ─── Assemble full package (core + impls + runtimes) — Windows zip ───
-  assemble:
-    runs-on: windows-latest
-    needs: [build-core, build-runtime, build-impls]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: dist/artifacts
-
-      - name: Assemble full package
-        shell: pwsh
-        run: |
-          $version = "${{ env.APP_VERSION }}" -replace '^v',''
-          $fullDir = "dist/full-staging"
-          New-Item -ItemType Directory -Force -Path $fullDir | Out-Null
-
-          # Core: setup-app jar + tap jar
-          $coreDir = "dist/artifacts/core-jars"
-          if (Test-Path $coreDir) {
-            Copy-Item "$coreDir/db-mcp-setup.jar" $fullDir
-            New-Item -ItemType Directory -Force -Path "$fullDir/tap" | Out-Null
-            Copy-Item "$coreDir/mcp-tap.jar" "$fullDir/tap/"
-          }
-
-          # JRE runtime (Windows-specific from matrix)
-          $rtDir = "dist/artifacts/jre-runtime-win-x64"
-          if (Test-Path $rtDir) {
-            New-Item -ItemType Directory -Force -Path "$fullDir/runtime" | Out-Null
-            Copy-Item "$rtDir/*" "$fullDir/runtime/" -Recurse -Force
-          }
-
-          # Implementation: extract impl zips into impls/
-          $implZips = Get-ChildItem "dist/artifacts" -Recurse -Filter "db-mcp-impl-*.zip"
-          if ($implZips) {
-            foreach ($z in $implZips) {
-              $tmp = "dist/tmp-extract-$($z.BaseName)"
-              Expand-Archive -Path $z.FullName -DestinationPath $tmp -Force
-              $manifest = Get-Content "$tmp/manifest.json" -Raw | ConvertFrom-Json
-              $dbId = $manifest.dbId
-              $serverId = $manifest.serverId
-              $destDir = "$fullDir/impls/$dbId/$serverId"
-              New-Item -ItemType Directory -Force -Path $destDir | Out-Null
-              $srcContent = Get-ChildItem $tmp | Where-Object { $_.Name -ne "manifest.json" }
-              foreach ($item in $srcContent) {
-                Copy-Item $item.FullName $destDir -Recurse -Force
-              }
-              Remove-Item $tmp -Recurse -Force
-            }
-          }
-
-          @{
-            type = "full"
-            version = $version
-            helperVersion = $version
-            platform = "win-x64"
-            includes = @("core", "impls", "runtime-jre")
-            createdAt = (Get-Date -Format "o")
-          } | ConvertTo-Json | Set-Content "$fullDir/manifest.json" -Encoding UTF8
-
-          Compress-Archive -Path "$fullDir/*" -DestinationPath "dist/db-mcp-helper-full-win-x64-$version.zip"
-          Write-Host "[OK] full package created"
-
-      - name: Upload full package
-        uses: actions/upload-artifact@v4
-        with:
-          name: full-package
-          path: dist/db-mcp-helper-full-*.zip
-          retention-days: 30
-
-  # ─── Desktop installers (Tauri) — 3 platforms × 2 variants ───
+  # ─── Desktop installers (Tauri) — 3 platforms × 3 variants ───
   desktop:
     strategy:
       fail-fast: false
@@ -384,11 +257,19 @@ jobs:
           - platform: win-x64
             runs-on: windows-latest
             shell: pwsh
+            variant: standard
+          - platform: win-x64
+            runs-on: windows-latest
+            shell: pwsh
             variant: full
           - platform: macos-x64
             runs-on: macos-latest
             shell: bash
             variant: slim
+          - platform: macos-x64
+            runs-on: macos-latest
+            shell: bash
+            variant: standard
           - platform: macos-x64
             runs-on: macos-latest
             shell: bash
@@ -397,6 +278,10 @@ jobs:
             runs-on: ubuntu-latest
             shell: bash
             variant: slim
+          - platform: linux-x64
+            runs-on: ubuntu-latest
+            shell: bash
+            variant: standard
           - platform: linux-x64
             runs-on: ubuntu-latest
             shell: bash
@@ -405,7 +290,9 @@ jobs:
     defaults:
       run:
         shell: ${{ matrix.shell }}
-    needs: [build-core, build-runtime]
+    needs: [build-core, build-runtime, build-impls]
+    env:
+      CI_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '0.3.0-dev' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -464,34 +351,112 @@ jobs:
           name: jre-runtime-${{ matrix.platform }}
           path: dist/runtime
 
-      # ── Stage Tauri bundle ──
+      - name: Download implementation artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: impl-*
+          path: dist/impls
+          merge-multiple: true
+          required: false
+
+      - name: Inject CI version
+        env:
+          VER: ${{ env.CI_VERSION }}
+        run: |
+          node -e "const fs=require('fs'); const v=process.env.VER.replace(/^v/,''); const p='shell/package.json'; const j=JSON.parse(fs.readFileSync(p,'utf8')); j.version=v; fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n')"
+          node -e "const fs=require('fs'); const v=process.env.VER.replace(/^v/,''); const p='shell/src-tauri/tauri.conf.json'; const j=JSON.parse(fs.readFileSync(p,'utf8')); j.version=v; fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n')"
+          echo "Injected version: $(node -p "require('./shell/package.json').version")"
+
+      # ── Stage Tauri bundle (Windows) ──
       - name: Stage Tauri bundle (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $bundle = "shell/bundle"
           New-Item -ItemType Directory -Force -Path $bundle | Out-Null
+
+          # Core JARs (all variants)
           Copy-Item "db-mcp-setup.jar" "$bundle/db-mcp-setup.jar"
           New-Item -ItemType Directory -Force -Path "$bundle/tap" | Out-Null
           Copy-Item "mcp-tap.jar" "$bundle/tap/mcp-tap.jar"
+
+          # JRE runtime (full variant only)
           if ("${{ matrix.variant }}" -eq "full" -and (Test-Path "dist/runtime")) {
             Copy-Item "dist/runtime" "$bundle/runtime" -Recurse -Force
             Write-Host "[OK] Bundled JRE staged (full variant)"
           } else {
-            Write-Host "[OK] Slim variant — no JRE bundled"
+            Write-Host "[OK] ${{ matrix.variant }} variant — no JRE bundled"
           }
 
+          # Implementation artifacts (standard: oracle+mysql; full: all)
+          $variant = "${{ matrix.variant }}"
+          if ($variant -ne "slim") {
+            $implZips = Get-ChildItem "dist/impls" -Filter "*.zip" -ErrorAction SilentlyContinue
+            if ($implZips) {
+              foreach ($z in $implZips) {
+                $db = ""
+                if ($z.Name -match "impl-(oracle|mysql|doris)") { $db = $Matches[1] }
+                if ($variant -eq "standard" -and $db -eq "doris") {
+                  Write-Host "[SKIP] doris impl (standard variant)"
+                  continue
+                }
+                $tmp = "dist/tmp-extract-$($z.BaseName)"
+                Expand-Archive -Path $z.FullName -DestinationPath $tmp -Force
+                $destDir = "$bundle/impls"
+                New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+                $srcContent = Get-ChildItem $tmp | Where-Object { $_.Name -ne "manifest.json" }
+                foreach ($item in $srcContent) {
+                  Copy-Item $item.FullName $destDir -Recurse -Force
+                }
+                Remove-Item $tmp -Recurse -Force
+                Write-Host "[OK] $db impl staged ($variant variant)"
+              }
+            } else {
+              Write-Host "[WARN] No impl zips found in dist/impls/"
+            }
+          } else {
+            Write-Host "[OK] Slim variant — no impls bundled"
+          }
+
+      # ── Stage Tauri bundle (Unix) ──
       - name: Stage Tauri bundle (Unix)
         if: runner.os != 'Windows'
         run: |
           mkdir -p shell/bundle/tap
+
+          # Core JARs (all variants)
           cp db-mcp-setup.jar shell/bundle/
           cp mcp-tap.jar shell/bundle/tap/
+
+          # JRE runtime (full variant only)
           if [ "${{ matrix.variant }}" = "full" ] && [ -d "dist/runtime" ]; then
             cp -r dist/runtime shell/bundle/runtime
             echo "[OK] Bundled JRE staged (full variant)"
           else
-            echo "[OK] Slim variant — no JRE bundled"
+            echo "[OK] ${{ matrix.variant }} variant — no JRE bundled"
+          fi
+
+          # Implementation artifacts (standard: oracle+mysql; full: all)
+          variant="${{ matrix.variant }}"
+          if [ "$variant" != "slim" ]; then
+            mkdir -p shell/bundle/impls
+            for z in dist/impls/*.zip; do
+              [ -f "$z" ] || continue
+              db=$(echo "$z" | grep -oE 'impl-(oracle|mysql|doris)' | head -1 | sed 's/impl-//')
+              if [ "$variant" = "standard" ] && [ "$db" = "doris" ]; then
+                echo "[SKIP] doris impl (standard variant)"
+                continue
+              fi
+              tmp="dist/tmp-extract-$(basename "$z" .zip)"
+              mkdir -p "$tmp"
+              unzip -q -o "$z" -d "$tmp"
+              rm -f "$tmp/manifest.json"
+              cp -r "$tmp"/* shell/bundle/impls/ 2>/dev/null || true
+              rm -rf "$tmp"
+              echo "[OK] $db impl staged ($variant variant)"
+            done
+          else
+            echo "[OK] Slim variant — no impls bundled"
           fi
 
       # ── Build Tauri installer (Windows) ──
@@ -551,6 +516,40 @@ jobs:
           echo "=== Build output ==="
           find src-tauri/target/release/bundle -type f 2>/dev/null || echo "(no bundle output)"
 
+      # ── Rename installer to include variant and version ──
+      - name: Rename installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = "${{ env.CI_VERSION }}" -replace '^v',''
+          $variant = "${{ matrix.variant }}"
+          $platform = "${{ matrix.platform }}"
+          $bundleDir = "shell/src-tauri/target/release/bundle"
+
+          Get-ChildItem $bundleDir -Recurse -Include "*.exe","*.msi" | ForEach-Object {
+            $ext = $_.Extension
+            $newName = "db-mcp-helper-$variant-$platform-$version$ext"
+            $newPath = Join-Path $_.DirectoryName $newName
+            Rename-Item $_.FullName $newName
+            Write-Host "[OK] $($_.Name) -> $newName"
+          }
+
+      - name: Rename installer (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          version="${{ env.CI_VERSION }}"
+          version="${version#v}"
+          variant="${{ matrix.variant }}"
+          platform="${{ matrix.platform }}"
+          bundleDir="shell/src-tauri/target/release/bundle"
+
+          find "$bundleDir" -type f \( -name "*.dmg" -o -name "*.deb" -o -name "*.AppImage" \) | while read -r f; do
+            ext="${f##*.}"
+            newName="db-mcp-helper-${variant}-${platform}-${version}.${ext}"
+            mv "$f" "$(dirname "$f")/$newName"
+            echo "[OK] $(basename "$f") -> $newName"
+          done
+
       # ── Upload installer artifacts ──
       - name: Upload installer (Windows)
         if: runner.os == 'Windows'
@@ -586,24 +585,28 @@ jobs:
   # ─── GitHub Release (tags only) ───
   release:
     runs-on: ubuntu-latest
-    needs: [assemble, build-impls, build-runtime, desktop]
+    needs: [desktop]
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all release artifacts
+      - name: Download all installer artifacts
         uses: actions/download-artifact@v4
         with:
-          path: dist/release
+          pattern: installer-*
+          path: dist/installers
+          merge-multiple: true
 
-      - name: Flatten artifact layout
+      - name: Flatten installer layout
         run: |
           mkdir -p dist/upload
-          find dist/release -type f \( -name "*.zip" -o -name "*.exe" -o -name "*.msi" \
+          find dist/installers -type f \( -name "*.exe" -o -name "*.msi" \
             -o -name "*.dmg" -o -name "*.deb" -o -name "*.AppImage" \) \
             -exec cp {} dist/upload/ \;
+          echo "=== Release files ==="
+          ls -la dist/upload/
 
       - name: Generate checksums.txt
         run: |
