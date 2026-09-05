@@ -48,6 +48,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $slimDir | Out-Null
 
           Copy-Item "setup-app/target/db-mcp-setup.jar" "$slimDir/"
+          New-Item -ItemType Directory -Force -Path "$slimDir/tap" | Out-Null
           Copy-Item "mcp-tap/target/mcp-tap.jar" "$slimDir/tap/"
 
           # manifest.json
