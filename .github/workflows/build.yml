@@ -494,11 +494,25 @@ jobs:
           }
           npm install
           $variant = "${{ matrix.variant }}"
+          $logFile = "$env:TEMP\tauri-build.log"
           if ($variant -eq "full") {
             Write-Host "[INFO] Full variant — building NSIS only to save disk space"
-            npx tauri build --bundles nsis
+            $proc = Start-Process -FilePath "npx" -ArgumentList "tauri","build","--bundles","nsis" -NoNewWindow -PassThru -RedirectStandardOutput $logFile -RedirectStandardError "$logFile.err"
+            $proc.WaitForExit()
+            $buildRc = $proc.ExitCode
           } else {
-            npx tauri build
+            $proc = Start-Process -FilePath "npx" -ArgumentList "tauri","build" -NoNewWindow -PassThru -RedirectStandardOutput $logFile -RedirectStandardError "$logFile.err"
+            $proc.WaitForExit()
+            $buildRc = $proc.ExitCode
+          }
+          if ($buildRc -ne 0) {
+            Write-Host ""
+            Write-Host "=== BUILD FAILED (exit $buildRc) — last 80 lines of build log ==="
+            if (Test-Path $logFile) { Get-Content $logFile -Tail 80 }
+            if (Test-Path "$logFile.err") { Write-Host "=== STDERR ==="; Get-Content "$logFile.err" -Tail 40 }
+            Write-Host "=== Disk space after failed build ==="
+            Get-PSDrive C | ForEach-Object { Write-Host ("{0:N1} GB free" -f ($_.Free/1GB)) }
+            exit $buildRc
           }
           Write-Host "=== Disk space after build ==="
           Get-PSDrive C | ForEach-Object { Write-Host ("{0:N1} GB free" -f ($_.Free/1GB)) }
