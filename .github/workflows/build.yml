@@ -571,29 +571,39 @@ jobs:
           $version = "${{ env.CI_VERSION }}" -replace '^v',''
           $variant = "${{ matrix.variant }}"
           $platform = "${{ matrix.platform }}"
-          $bundleDir = "shell/src-tauri/target/release/bundle"
+          $bundleDir = "shell\src-tauri\target\release\bundle"
 
-          Write-Host "=== Bundle directory contents ==="
+          Write-Host "=== Bundle directory tree ==="
           if (Test-Path $bundleDir) {
-            Get-ChildItem $bundleDir -Recurse -File | Select-Object FullName, Length | Format-Table -AutoSize
+            Get-ChildItem $bundleDir -Recurse -File | ForEach-Object {
+              Write-Host ("  {0}  ({1:N0} bytes)" -f $_.FullName, $_.Length)
+            }
           } else {
             Write-Host "[ERROR] Bundle directory not found: $bundleDir"
             exit 1
           }
 
           $installers = @()
-          if (Test-Path "$bundleDir/nsis") { $installers += Get-ChildItem "$bundleDir/nsis" -Include "*.exe" -ErrorAction SilentlyContinue }
-          if (Test-Path "$bundleDir/msi")  { $installers += Get-ChildItem "$bundleDir/msi"  -Include "*.msi" -ErrorAction SilentlyContinue }
-          if (-not $installers -or $installers.Count -eq 0) {
-            Write-Host "[ERROR] No installer found in $bundleDir/nsis or $bundleDir/msi"
+          $nsisDir = Join-Path $bundleDir "nsis"
+          $msiDir  = Join-Path $bundleDir "msi"
+          if (Test-Path $nsisDir) {
+            $installers += Get-ChildItem $nsisDir -File | Where-Object { $_.Extension -eq ".exe" }
+          }
+          if (Test-Path $msiDir) {
+            $installers += Get-ChildItem $msiDir -File | Where-Object { $_.Extension -eq ".msi" }
+          }
+
+          Write-Host "[INFO] Found $($installers.Count) installer(s)"
+          if ($installers.Count -eq 0) {
+            Write-Host "[ERROR] No installer .exe/.msi found in $nsisDir or $msiDir"
             exit 1
           }
 
-          $installers | ForEach-Object {
-            $ext = $_.Extension
+          foreach ($f in $installers) {
+            $ext = $f.Extension
             $newName = "db-mcp-helper-$variant-$platform-$version$ext"
-            Rename-Item $_.FullName $newName
-            Write-Host "[OK] $($_.Name) -> $newName"
+            Rename-Item $f.FullName $newName
+            Write-Host "[OK] $($f.Name) -> $newName"
           }
 
       - name: Rename installer (Unix)
