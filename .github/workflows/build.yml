@@ -566,9 +566,11 @@ jobs:
             exit 1
           }
 
-          $installers = Get-ChildItem $bundleDir -Recurse -Include "*.exe","*.msi" -ErrorAction SilentlyContinue
+          $installers = @()
+          if (Test-Path "$bundleDir/nsis") { $installers += Get-ChildItem "$bundleDir/nsis" -Include "*.exe" -ErrorAction SilentlyContinue }
+          if (Test-Path "$bundleDir/msi")  { $installers += Get-ChildItem "$bundleDir/msi"  -Include "*.msi" -ErrorAction SilentlyContinue }
           if (-not $installers -or $installers.Count -eq 0) {
-            Write-Host "[ERROR] No .exe or .msi files found in $bundleDir"
+            Write-Host "[ERROR] No installer found in $bundleDir/nsis or $bundleDir/msi"
             exit 1
           }
 
