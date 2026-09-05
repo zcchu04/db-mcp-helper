@@ -484,6 +484,7 @@ jobs:
           CARGO_PROFILE_RELEASE_LTO: "false"
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
         run: |
+          $ErrorActionPreference = 'Stop'
           Write-Host "=== Disk space before build ==="
           Get-PSDrive C | ForEach-Object { Write-Host ("{0:N1} GB free" -f ($_.Free/1GB)) }
           Write-Host "=== Bundle directory ==="
@@ -493,18 +494,18 @@ jobs:
             Get-ChildItem bundle/runtime -Recurse -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum | ForEach-Object { Write-Host ("{0:N0} MB" -f ($_.Sum / 1MB)) }
           }
           npm install
+          $npxCmd = (Get-Command npx.cmd -ErrorAction Stop).Source
+          Write-Host "[INFO] Using npx at: $npxCmd"
           $variant = "${{ matrix.variant }}"
           $logFile = "$env:TEMP\tauri-build.log"
+          $buildArgs = "tauri","build"
           if ($variant -eq "full") {
             Write-Host "[INFO] Full variant — building NSIS only to save disk space"
-            $proc = Start-Process -FilePath "npx" -ArgumentList "tauri","build","--bundles","nsis" -NoNewWindow -PassThru -RedirectStandardOutput $logFile -RedirectStandardError "$logFile.err"
-            $proc.WaitForExit()
-            $buildRc = $proc.ExitCode
-          } else {
-            $proc = Start-Process -FilePath "npx" -ArgumentList "tauri","build" -NoNewWindow -PassThru -RedirectStandardOutput $logFile -RedirectStandardError "$logFile.err"
-            $proc.WaitForExit()
-            $buildRc = $proc.ExitCode
+            $buildArgs += "--bundles","nsis"
           }
+          $proc = Start-Process -FilePath $npxCmd -ArgumentList $buildArgs -NoNewWindow -PassThru -RedirectStandardOutput $logFile -RedirectStandardError "$logFile.err"
+          $proc.WaitForExit()
+          $buildRc = $proc.ExitCode
           if ($buildRc -ne 0) {
             Write-Host ""
             Write-Host "=== BUILD FAILED (exit $buildRc) — last 80 lines of build log ==="
