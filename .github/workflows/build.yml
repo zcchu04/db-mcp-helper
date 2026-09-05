@@ -314,6 +314,7 @@ jobs:
   # ─── Desktop installers (Tauri) — 3 platforms × 2 variants ───
   desktop:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - platform: win-x64
@@ -414,9 +415,13 @@ jobs:
       # ── Build Tauri installer ──
       - name: Build Tauri installer
         working-directory: shell
+        env:
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+          CARGO_TERM_VERBOSE: "true"
         run: |
           npm install
-          npm run tauri build
+          npx tauri build --verbose
 
       # ── Upload installer artifacts ──
       - name: Upload installer (Windows)
