@@ -51,7 +51,6 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$slimDir/tap" | Out-Null
           Copy-Item "mcp-tap/target/mcp-tap.jar" "$slimDir/tap/"
 
-          # manifest.json
           @{
             type = "slim"
             version = $version
@@ -84,9 +83,24 @@ jobs:
           path: dist/db-mcp-helper-slim-*.zip
           retention-days: 30
 
-  # ─── Build jlink JRE runtime ───
+  # ─── Build jlink JRE runtime (per-platform for desktop installers) ───
   build-runtime:
-    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - platform: win-x64
+            runs-on: windows-latest
+            shell: pwsh
+          - platform: macos-x64
+            runs-on: macos-latest
+            shell: bash
+          - platform: linux-x64
+            runs-on: ubuntu-latest
+            shell: bash
+    runs-on: ${{ matrix.runs-on }}
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
     needs: build-core
     steps:
       - uses: actions/checkout@v4
@@ -102,10 +116,10 @@ jobs:
         with:
           name: core-jars
 
-      - name: jlink JRE
+      - name: jlink JRE (Windows)
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # Use the fat JAR (downloaded to workspace root by upload/download-artifact)
           $fatJar = "db-mcp-setup.jar"
           $mods = (cmd /c "jdeps --ignore-missing-deps --print-module-deps `"$fatJar`" 2>&1") | Where-Object { $_ -notmatch "^WARNING:" }
           $full = @(
@@ -115,43 +129,49 @@ jobs:
             "jdk.httpserver"
           )
           $all = (($full + ($mods -split ",")) | Sort-Object -Unique | Where-Object { $_.Trim() } | ForEach-Object { $_.Trim() }) -join ","
-
           & jlink --add-modules $all --output "dist/runtime" `
             --strip-debug --no-header-files --no-man-pages --compress 2
           if ($LASTEXITCODE -ne 0) { throw "jlink failed" }
 
+      - name: jlink JRE (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          MODS=$(jdeps --ignore-missing-deps --print-module-deps db-mcp-setup.jar 2>/dev/null || true)
+          FULL="java.base,java.logging,java.xml,java.desktop,java.instrument,java.management,java.naming,java.net.http,java.rmi,java.sql,jdk.net,jdk.security.jgss,jdk.httpserver"
+          ALL=$(echo "${FULL},${MODS}" | tr ',' '\n' | sort -u | tr '\n' ',' | sed 's/,$//')
+          jlink --add-modules "$ALL" --output dist/runtime \
+            --strip-debug --no-header-files --no-man-pages --compress 2
+
       - name: Package JRE runtime zip
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $version = "${{ env.APP_VERSION }}" -replace '^v',''
           $rtDir = "dist/runtime-staging"
           New-Item -ItemType Directory -Force -Path $rtDir | Out-Null
-
           Copy-Item "dist/runtime" "$rtDir/runtime" -Recurse
-
           @{
             type = "runtime-jre"
             version = $version
             helperVersion = $version
-            platform = "win-x64"
+            platform = "${{ matrix.platform }}"
             runtimeKind = "JAVA_JAR"
             createdAt = (Get-Date -Format "o")
           } | ConvertTo-Json | Set-Content "$rtDir/manifest.json" -Encoding UTF8
+          Compress-Archive -Path "$rtDir/*" -DestinationPath "dist/db-mcp-runtime-jre-${{ matrix.platform }}-$version.zip"
 
-          Compress-Archive -Path "$rtDir/*" -DestinationPath "dist/db-mcp-runtime-jre-win-x64-$version.zip"
-          Write-Host "[OK] JRE runtime package created"
-
-      - name: Upload JRE runtime
+      - name: Upload JRE runtime zip
+        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: runtime-jre
+          name: runtime-jre-${{ matrix.platform }}
           path: dist/db-mcp-runtime-jre-*.zip
           retention-days: 30
 
-      - name: Upload raw runtime dir (for assemble)
+      - name: Upload raw runtime dir (for desktop installer)
         uses: actions/upload-artifact@v4
         with:
-          name: jre-runtime-dir
+          name: jre-runtime-${{ matrix.platform }}
           path: dist/runtime/
           retention-days: 3
 
@@ -196,9 +216,7 @@ jobs:
           $version = "${{ env.APP_VERSION }}" -replace '^v',''
           $implDir = "dist/impl-oracle-staging"
           New-Item -ItemType Directory -Force -Path "$implDir/builtin-toolkit" | Out-Null
-
           Copy-Item $env:TOOLKIT_JAR "$implDir/builtin-toolkit/oracle-db-mcp-toolkit.jar"
-
           @{
             type = "impl-oracle-toolkit"
             version = "1.0.0"
@@ -210,7 +228,6 @@ jobs:
             entryFile = "oracle-db-mcp-toolkit.jar"
             createdAt = (Get-Date -Format "o")
           } | ConvertTo-Json | Set-Content "$implDir/manifest.json" -Encoding UTF8
-
           Compress-Archive -Path "$implDir/*" -DestinationPath "dist/db-mcp-impl-oracle-toolkit-$version.zip"
           Write-Host "[OK] Oracle impl package created"
 
@@ -222,7 +239,7 @@ jobs:
           path: dist/db-mcp-impl-oracle-*.zip
           retention-days: 30
 
-  # ─── Assemble full package (core + impls + runtimes) ───
+  # ─── Assemble full package (core + impls + runtimes) — Windows zip ───
   assemble:
     runs-on: windows-latest
     needs: [build-core, build-runtime, build-impls]
@@ -249,8 +266,8 @@ jobs:
             Copy-Item "$coreDir/mcp-tap.jar" "$fullDir/tap/"
           }
 
-          # JRE runtime
-          $rtDir = "dist/artifacts/jre-runtime-dir"
+          # JRE runtime (Windows-specific from matrix)
+          $rtDir = "dist/artifacts/jre-runtime-win-x64"
           if (Test-Path $rtDir) {
             New-Item -ItemType Directory -Force -Path "$fullDir/runtime" | Out-Null
             Copy-Item "$rtDir/*" "$fullDir/runtime/" -Recurse -Force
@@ -262,7 +279,6 @@ jobs:
             foreach ($z in $implZips) {
               $tmp = "dist/tmp-extract-$($z.BaseName)"
               Expand-Archive -Path $z.FullName -DestinationPath $tmp -Force
-              # Each impl zip has subdirs like builtin-toolkit/
               $manifest = Get-Content "$tmp/manifest.json" -Raw | ConvertFrom-Json
               $dbId = $manifest.dbId
               $serverId = $manifest.serverId
@@ -276,7 +292,6 @@ jobs:
             }
           }
 
-          # manifest.json for full package
           @{
             type = "full"
             version = $version
@@ -296,19 +311,42 @@ jobs:
           path: dist/db-mcp-helper-full-*.zip
           retention-days: 30
 
-  # ─── Desktop installer (Tauri, Windows only for now) ───
+  # ─── Desktop installers (Tauri) — 3 platforms × 2 variants ───
   desktop:
-    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - platform: win-x64
+            runs-on: windows-latest
+            shell: pwsh
+            variant: slim
+          - platform: win-x64
+            runs-on: windows-latest
+            shell: pwsh
+            variant: full
+          - platform: macos-x64
+            runs-on: macos-latest
+            shell: bash
+            variant: slim
+          - platform: macos-x64
+            runs-on: macos-latest
+            shell: bash
+            variant: full
+          - platform: linux-x64
+            runs-on: ubuntu-latest
+            shell: bash
+            variant: slim
+          - platform: linux-x64
+            runs-on: ubuntu-latest
+            shell: bash
+            variant: full
+    runs-on: ${{ matrix.runs-on }}
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
     needs: [build-core, build-runtime]
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-          cache: maven
 
       - uses: actions/setup-node@v4
         with:
@@ -322,41 +360,94 @@ jobs:
         with:
           workspaces: shell/src-tauri
 
+      # ── Linux: install Tauri system dependencies ──
+      - name: Install Linux Tauri dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev
+
       - name: Download core JARs
         uses: actions/download-artifact@v4
         with:
           name: core-jars
 
-      - name: Download JRE runtime
+      - name: Download JRE runtime (full variant only)
+        if: matrix.variant == 'full'
         uses: actions/download-artifact@v4
         with:
-          name: jre-runtime-dir
+          name: jre-runtime-${{ matrix.platform }}
           path: dist/runtime
 
-      - name: Stage Tauri bundle
+      # ── Stage Tauri bundle ──
+      - name: Stage Tauri bundle (Windows)
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $bundle = "shell/bundle"
           New-Item -ItemType Directory -Force -Path $bundle | Out-Null
           Copy-Item "db-mcp-setup.jar" "$bundle/db-mcp-setup.jar"
-          if (Test-Path "dist/runtime") {
+          if ("${{ matrix.variant }}" -eq "full" -and (Test-Path "dist/runtime")) {
             Copy-Item "dist/runtime" "$bundle/runtime" -Recurse -Force
-            Write-Host "[OK] Bundled JRE staged"
+            Write-Host "[OK] Bundled JRE staged (full variant)"
+          } else {
+            Write-Host "[OK] Slim variant — no JRE bundled"
           }
 
-      - name: Build Tauri installer
-        shell: pwsh
+      - name: Stage Tauri bundle (Unix)
+        if: runner.os != 'Windows'
         run: |
-          Push-Location shell
+          mkdir -p shell/bundle
+          cp db-mcp-setup.jar shell/bundle/
+          if [ "${{ matrix.variant }}" = "full" ] && [ -d "dist/runtime" ]; then
+            cp -r dist/runtime shell/bundle/runtime
+            echo "[OK] Bundled JRE staged (full variant)"
+          else
+            echo "[OK] Slim variant — no JRE bundled"
+          fi
+
+      # ── Build Tauri installer ──
+      - name: Build Tauri installer
+        working-directory: shell
+        run: |
           npm install
           npm run tauri build
-          Pop-Location
 
-      - name: Upload Tauri installer
+      # ── Upload installer artifacts ──
+      - name: Upload installer (Windows)
+        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: desktop-installer
-          path: shell/src-tauri/target/release/bundle/**/*.exe
+          name: installer-${{ matrix.platform }}-${{ matrix.variant }}
+          path: |
+            shell/src-tauri/target/release/bundle/**/*.exe
+            shell/src-tauri/target/release/bundle/**/*.msi
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload installer (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.platform }}-${{ matrix.variant }}
+          path: shell/src-tauri/target/release/bundle/**/*.dmg
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload installer (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.platform }}-${{ matrix.variant }}
+          path: |
+            shell/src-tauri/target/release/bundle/**/*.deb
+            shell/src-tauri/target/release/bundle/**/*.AppImage
+          if-no-files-found: warn
           retention-days: 30
 
   # ─── GitHub Release (tags only) ───
@@ -377,7 +468,8 @@ jobs:
       - name: Flatten artifact layout
         run: |
           mkdir -p dist/upload
-          find dist/release -type f \( -name "*.zip" -o -name "*.exe" -o -name "*.msi" -o -name "*.dmg" -o -name "*.deb" \) \
+          find dist/release -type f \( -name "*.zip" -o -name "*.exe" -o -name "*.msi" \
+            -o -name "*.dmg" -o -name "*.deb" -o -name "*.AppImage" \) \
             -exec cp {} dist/upload/ \;
 
       - name: Generate checksums.txt
