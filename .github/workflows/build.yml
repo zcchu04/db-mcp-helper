@@ -418,10 +418,9 @@ jobs:
         env:
           CARGO_PROFILE_RELEASE_LTO: "false"
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
-          CARGO_TERM_VERBOSE: "true"
         run: |
           npm install
-          npx tauri build --verbose
+          npx tauri build
 
       # ── Upload installer artifacts ──
       - name: Upload installer (Windows)
