@@ -180,17 +180,26 @@ jobs:
     runs-on: windows-latest
     needs: build-core
     strategy:
+      fail-fast: false
       matrix:
         include:
           - db: oracle
             serverId: builtin-toolkit
-            jarPattern: "oracle-db-mcp-toolkit-*.jar"
             runtimeKind: JAVA_JAR
             entryFile: oracle-db-mcp-toolkit.jar
+          - db: mysql
+            serverId: builtin-toolkit
+            runtimeKind: NODE_JS
+            entryFile: mysql-mcp-server
+          - db: doris
+            serverId: builtin-toolkit
+            runtimeKind: NODE_JS
+            entryFile: mysql-mcp-server
     steps:
       - uses: actions/checkout@v4
 
-      - name: Resolve toolkit JAR
+      - name: Resolve Oracle toolkit JAR
+        if: matrix.db == 'oracle'
         shell: pwsh
         run: |
           $jar = $null
@@ -206,37 +215,88 @@ jobs:
             "SKIP=true" | Out-File $env:GITHUB_ENV
             return
           }
-          "TOOLKIT_JAR=$jar" | Out-File $env:GITHUB_ENV
-          Write-Host "[OK] Using toolkit: $jar"
+          "TOOLKIT_SRC=$jar" | Out-File $env:GITHUB_ENV
+          Write-Host "[OK] Using Oracle toolkit: $jar"
 
-      - name: Package Oracle impl zip
+      - name: Resolve MySQL toolkit
+        if: matrix.db == 'mysql' || matrix.db == 'doris'
+        env:
+          MYSQL_TOOLKIT_URL: ${{ inputs.mysql_toolkit_url }}
+        shell: pwsh
+        run: |
+          $toolkit = $null
+          $candidates = @(
+            "mysql-mcp-src/target/mysql-mcp-server",
+            "$env:USERPROFILE/.qoderwork/mcp/mysql-mcp-server"
+          )
+          foreach ($c in $candidates) {
+            if (Test-Path $c) { $toolkit = $c; break }
+          }
+          if (-not $toolkit -and $env:MYSQL_TOOLKIT_URL) {
+            Write-Host "[INFO] Downloading MySQL toolkit from $env:MYSQL_TOOLKIT_URL"
+            New-Item -ItemType Directory -Force -Path "dist/mysql-dl" | Out-Null
+            $dlFile = "dist/mysql-dl/mysql-toolkit.tar.gz"
+            Invoke-WebRequest -Uri $env:MYSQL_TOOLKIT_URL -OutFile $dlFile -UseBasicParsing
+            $dlDir = "dist/mysql-dl/extracted"
+            New-Item -ItemType Directory -Force -Path $dlDir | Out-Null
+            tar -xzf $dlFile -C $dlDir
+            $found = Get-ChildItem $dlDir -Directory -Recurse | Select-Object -First 1
+            if ($found) { $toolkit = $found.FullName }
+          }
+          if (-not $toolkit) {
+            Write-Host "[WARN] MySQL toolkit not found; ${{ matrix.db }} impl package will be skipped"
+            "SKIP=true" | Out-File $env:GITHUB_ENV
+            return
+          }
+          "TOOLKIT_SRC=$toolkit" | Out-File $env:GITHUB_ENV
+          Write-Host "[OK] Using MySQL toolkit (${{ matrix.db }}): $toolkit"
+
+      - name: Package impl zip
         if: env.SKIP != 'true'
         shell: pwsh
         run: |
           $version = "${{ env.APP_VERSION }}" -replace '^v',''
-          $implDir = "dist/impl-oracle-staging"
-          New-Item -ItemType Directory -Force -Path "$implDir/builtin-toolkit" | Out-Null
-          Copy-Item $env:TOOLKIT_JAR "$implDir/builtin-toolkit/oracle-db-mcp-toolkit.jar"
+          $db = "${{ matrix.db }}"
+          $serverId = "${{ matrix.serverId }}"
+          $runtimeKind = "${{ matrix.runtimeKind }}"
+          $entryFile = "${{ matrix.entryFile }}"
+          $implDir = "dist/impl-$db-staging"
+          $destDir = "$implDir/$serverId"
+          New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+
+          if ($runtimeKind -eq "JAVA_JAR") {
+            Copy-Item $env:TOOLKIT_SRC "$destDir/$entryFile"
+          } else {
+            Copy-Item -Recurse -Force "$env:TOOLKIT_SRC/*" $destDir
+            $shimSrc = "setup-app/src/main/shims/mysql-build-index.js"
+            $shimDest = "$destDir/build/index.js"
+            if ((Test-Path "$destDir/build") -and (Test-Path $shimSrc)) {
+              Copy-Item $shimSrc $shimDest -Force
+              Write-Host "[OK] MySQL build/index.js shim overlaid"
+            }
+          }
+
           @{
-            type = "impl-oracle-toolkit"
+            type = "impl-$db-toolkit"
             version = "1.0.0"
             helperVersion = $version
             platform = "any"
-            runtimeKind = "JAVA_JAR"
-            dbId = "oracle"
-            serverId = "builtin-toolkit"
-            entryFile = "oracle-db-mcp-toolkit.jar"
+            runtimeKind = $runtimeKind
+            dbId = $db
+            serverId = $serverId
+            entryFile = $entryFile
             createdAt = (Get-Date -Format "o")
           } | ConvertTo-Json | Set-Content "$implDir/manifest.json" -Encoding UTF8
-          Compress-Archive -Path "$implDir/*" -DestinationPath "dist/db-mcp-impl-oracle-toolkit-$version.zip"
-          Write-Host "[OK] Oracle impl package created"
 
-      - name: Upload Oracle impl
+          Compress-Archive -Path "$implDir/*" -DestinationPath "dist/db-mcp-impl-$db-$version.zip"
+          Write-Host "[OK] $db impl package created"
+
+      - name: Upload impl
         if: env.SKIP != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: impl-oracle
-          path: dist/db-mcp-impl-oracle-*.zip
+          name: impl-${{ matrix.db }}
+          path: dist/db-mcp-impl-${{ matrix.db }}-*.zip
           retention-days: 30
 
   # ─── Assemble full package (core + impls + runtimes) — Windows zip ───
