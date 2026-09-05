@@ -63,13 +63,18 @@ jobs:
           Compress-Archive -Path "$slimDir/*" -DestinationPath "dist/db-mcp-helper-slim-win-x64-$version.zip"
           Write-Host "[OK] slim package created"
 
+      - name: Stage core JARs flat
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "dist/core-jars" | Out-Null
+          Copy-Item "setup-app/target/db-mcp-setup.jar" "dist/core-jars/"
+          Copy-Item "mcp-tap/target/mcp-tap.jar" "dist/core-jars/"
+
       - name: Upload core artifacts
         uses: actions/upload-artifact@v4
         with:
           name: core-jars
-          path: |
-            setup-app/target/db-mcp-setup.jar
-            mcp-tap/target/mcp-tap.jar
+          path: dist/core-jars/
           retention-days: 7
 
       - name: Upload slim package
