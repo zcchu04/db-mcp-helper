@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Build DB MCP Helper Windows installer (.exe / .msi / app-image).
+  Build DB MCP Helper Windows installer (.exe / .msi / app-image / standalone).
 .DESCRIPTION
   1. Verify JDK 17 (jpackage/jlink/jdeps present)
   2. Locate Inno Setup (for final .exe) or WiX Toolset (for .msi)
@@ -14,10 +14,16 @@
   Default output is .exe (custom install dir + uninstaller via Inno Setup);
   use -Type msi to keep the pure jpackage MSI (WiX required), or app-image
   for the unpackaged app directory.
+
+  Use -Standalone to build a Tauri NSIS EXE with everything bundled (JRE + all
+  toolkits), requiring zero configuration after installation — no runtime setup
+  and no downloads needed.
 .EXAMPLE
   .\package-windows.ps1
   .\package-windows.ps1 -Type msi
   .\package-windows.ps1 -Type app-image
+  .\package-windows.ps1 -Standalone
+  .\package-windows.ps1 -Standalone -MysqlToolkit C:\path\to\mysql-mcp-server -NodeRuntimeZip C:\path\to\node-runtime.zip
 #>
 param(
     [ValidateSet("exe", "msi", "app-image")]
@@ -51,7 +57,11 @@ param(
     # browser-based wizard). "tauri" builds a real desktop app via Tauri's WebView
     # shell that embeds the Java backend (no system browser popup).
     [ValidateSet("inno", "tauri")]
-    [string]$Shell = "inno"
+    [string]$Shell = "inno",
+
+    # Standalone mode: produce a single Tauri NSIS EXE with everything bundled
+    # (JRE + all toolkits). Zero configuration after installation.
+    [switch]$Standalone
 )
 
 $ErrorActionPreference = "Stop"
@@ -356,6 +366,10 @@ function Invoke-JpackageMsi {
 }
 
 function Invoke-TauriShell {
+    param(
+        # Limit to specific bundle types (e.g. @("nsis")). Default: all targets.
+        [string[]]$Bundles = @()
+    )
     Write-Host "[INFO] Tauri desktop shell build ..."
     # npm (managed Node) drives the Tauri CLI; cargo (Rust) must be on PATH.
     if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
@@ -366,7 +380,7 @@ function Invoke-TauriShell {
     }
 
     # Assemble the bundle dir Tauri ships as resources: the fat jar (already
-    # contains toolkit/tap/skill on the classpath) plus the optional JRE fallback.
+    # contains toolkit/tap/skill on the classpath) plus the JRE fallback.
     $bundle = "$PSScriptRoot\shell\bundle"
     New-Item -ItemType Directory -Force -Path $bundle | Out-Null
 
@@ -386,7 +400,12 @@ function Invoke-TauriShell {
     try {
         & npm install
         if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
-        & npm run tauri build
+        if ($Bundles.Count -gt 0) {
+            $bundleArgs = @("run", "tauri", "build", "--", "--bundles", ($Bundles -join ","))
+            & npm $bundleArgs
+        } else {
+            & npm run tauri build
+        }
         if ($LASTEXITCODE -ne 0) { throw "tauri build failed" }
     } finally {
         Pop-Location
@@ -408,11 +427,16 @@ Invoke-JlinkRuntime -ToolkitJar $toolkit
 Invoke-StageResources -ToolkitJar $toolkit
 Invoke-SetupAppBuild
 
-if ($Shell -eq "tauri") {
+if ($Standalone) {
+    Write-Host "[INFO] Standalone mode: building Tauri NSIS EXE with everything bundled"
+}
+
+if ($Shell -eq "tauri" -or $Standalone) {
     # Real desktop app: Tauri spawns the Java backend and shows it in a WebView
     # window (no system browser). The jlink runtime above is shipped as the JRE
     # fallback; the installer itself is produced by `tauri build`, not jpackage.
-    Invoke-TauriShell
+    $bundles = if ($Standalone) { @("nsis") } else { @() }
+    Invoke-TauriShell -Bundles $bundles
     return
 }
 

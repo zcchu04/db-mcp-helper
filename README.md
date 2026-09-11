@@ -56,7 +56,7 @@ baseDir/
 
 ### 从源码构建
 
-**前置条件**：JDK 17+、Maven 3.6+；Windows 出 `.exe` 需额外安装 [Inno Setup 6](https://jrsoftware.org/isdl.php)。
+**前置条件**：JDK 17+、Maven 3.6+；Inno Setup 传统安装器需额外安装 [Inno Setup 6](https://jrsoftware.org/isdl.php)；独立全量 EXE（`-Standalone`）需 [Rust](https://www.rust-lang.org) + [Node.js](https://nodejs.org) 20+。
 
 ```bash
 # 1. 构建 Oracle 官方 MCP Toolkit（按需要）
@@ -90,6 +90,9 @@ mvn package -DskipTests -q -pl setup-app
 
 # 6. 打包（Windows 默认 exe；-InnoSetup 需先安装）
 pwsh package-windows.ps1            # 产物 dist\pkg\DB MCP Helper-1.0.0.exe
+
+# 7. （可选）独立全量 EXE：Tauri NSIS，自带 JRE + 所有 toolkit，安装后零配置
+pwsh package-windows.ps1 -Standalone -MysqlToolkit <mysql-dir> -NodeRuntimeZip <node-zip>
 ```
 
 > 不提供 MySQL 资源时，安装器仍可构建并运行，仅 MySQL 适配器在部署阶段会提示缺少 toolkit/Node 运行时；Oracle 路径完全不受影响（零回归）。

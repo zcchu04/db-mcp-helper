@@ -28,6 +28,12 @@
     "resources": {
       "../bundle": "bundle"
     },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false
+      }
+    },
     "createUpdaterArtifacts": false
   },
   "plugins": {}
