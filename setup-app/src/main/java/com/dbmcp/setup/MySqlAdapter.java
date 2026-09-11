@@ -68,14 +68,14 @@ public final class MySqlAdapter implements DbAdapter {
         return "mysql-mcp-server";
     }
 
-    @Override
-    public List<String> extraToolkitDirResources() {
-        return List.of("toolkit/mysql/" + nagaDirName());
+    /** benborla29 实现的内置 toolkit 资源目录。 */
+    static String benborlaResource() {
+        return "toolkit/mysql/mysql-mcp-server";
     }
 
-    /** naga 实现的内置目录名（toolkit/mysql/ 下，与 benborla29 的 mysql-mcp-server 并列）。 */
-    public static String nagaDirName() {
-        return "mysql-naga-mcp-server";
+    /** naganpm 实现的内置 toolkit 资源目录（与 benborla29 的 mysql-mcp-server 并列）。 */
+    public static String nagaResource() {
+        return "toolkit/mysql/mysql-naga-mcp-server";
     }
 
     @Override
@@ -119,13 +119,15 @@ public final class MySqlAdapter implements DbAdapter {
                         "@benborla29/mcp-server-mysql (Node)",
                         "单工具 mysql_query 执行任意 SQL；mysql_insert/update/delete 为写能力开关（默认只读）",
                         TOOLS_BENBORLA,
-                        REQUIRED_BENBORLA),
+                        REQUIRED_BENBORLA,
+                        benborlaResource()),
                 new McpServerOption(
                         IMPL_NAGA,
                         "@naganpm/mysql-mcp-server (Node)",
                         "8 个细粒度工具：增删改查独立工具 + 表结构/库列表/连接测试；mysql_query 仅 SELECT",
                         TOOLS_NAGA,
-                        REQUIRED_NAGA));
+                        REQUIRED_NAGA,
+                        nagaResource()));
     }
 
     @Override
@@ -180,16 +182,13 @@ public final class MySqlAdapter implements DbAdapter {
         return env;
     }
 
-    /** 按实现分派 server 入口：benborla29 → 桥接 shim（build/index.js）；naganpm → dist/index.js（ESM）。 */
+    /** 两实现的入口都是 build/index.js 桥接 shim（真正入口由 shim 动态 import ../dist/index.js）。 */
     @Override
     public List<String> buildCommand(Path baseDir, String dbId, String env, List<String> tools, String mcpServer) {
         String java = Installer.resolveJava(baseDir);
         boolean win = System.getProperty("os.name", "").toLowerCase().contains("win");
         Path nodeExe = baseDir.resolve(Installer.RUNTIMES_DIR).resolve("node").resolve(win ? "node.exe" : "node");
-        Path implDir = ImplRegistry.implDir(baseDir, dbId, mcpServer);
-        Path serverEntry = IMPL_NAGA.equals(mcpServer)
-                ? implDir.resolve("build").resolve("index.js")
-                : implDir.resolve("build").resolve("index.js");
+        Path serverEntry = ImplRegistry.implDir(baseDir, dbId, mcpServer).resolve("build").resolve("index.js");
         return List.of(
                 java, "-jar", baseDir.resolve("tap").resolve(Cfg.TAP_FILE_NAME).toString(),
                 "--log", Installer.callLog(baseDir, dbId, env, mcpServer).toString(), "--",
@@ -201,11 +200,16 @@ public final class MySqlAdapter implements DbAdapter {
         return "mysql_query";
     }
 
-    /** 自检入参：两实现的 mysql_query 工具均使用参数名 sql。 */
+    /** 自检入参：benborla29 的 mysql_query 取 sql，naganpm 取 query。 */
     @Override
     public JsonObject pingArguments(String mcpServer) {
+        return mysqlQueryArguments(mcpServer);
+    }
+
+    /** 两实现的 mysql_query 参数名不同，自检入参按实现分派。 */
+    static JsonObject mysqlQueryArguments(String mcpServer) {
         JsonObject args = new JsonObject();
-        args.addProperty("sql", "SELECT 1");
+        args.addProperty(IMPL_NAGA.equals(mcpServer) ? "query" : "sql", "SELECT 1");
         return args;
     }
 

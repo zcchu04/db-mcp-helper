@@ -51,11 +51,8 @@ public final class SelfTest {
             log.println("tap:     " + tap + " exists=" + Files.isRegularFile(tap));
             log.println("config:  " + cfg + " exists=" + Files.isRegularFile(cfg));
 
-            // NODE 链路的服务端入口按实现分派：benborla29 → build/index.js；naganpm → dist/index.js
-            boolean nagaImpl = MySqlAdapter.IMPL_NAGA.equals(mcpServer);
-            Path serverEntry = nagaImpl
-                    ? toolkit.getParent().resolve("naganpm").resolve("build").resolve("index.js")
-                    : toolkit.resolve("build").resolve("index.js");
+            // NODE 链路的服务端入口：各实现目录下统一的桥接 shim build/index.js
+            Path serverEntry = ImplRegistry.implDir(baseDir, dbId, mcpServer).resolve("build").resolve("index.js");
             if (adapter.runtimeKind() == DbAdapter.RuntimeKind.JAVA_JAR
                     && (!Files.isRegularFile(toolkit) || !Files.isRegularFile(tap) || !Files.isRegularFile(cfg))) {
                 r.ok = false;

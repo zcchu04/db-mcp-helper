@@ -96,23 +96,88 @@ public final class Installer {
         }
     }
 
-    /** 释放某库 toolkit 到 baseDir/impls/&lt;dbId&gt;/&lt;serverId&gt;/（每个 McpServerOption 独立一份），并解压附加实现目录。
-     *  幂等：目标已就绪则跳过，避免重复解压数千个 node_modules 文件。 */
+    /**
+     * 释放某库内置实现到 baseDir/impls/&lt;dbId&gt;/&lt;serverId&gt;/——每个 McpServerOption 一份自己的资源。
+     *
+     * <p>内容戳 {@link #BUILTIN_STAMP_FILE} 记录"资源路径 + 安装包指纹"：一致则跳过（避免重复解压
+     * 数千个 node_modules 文件），不一致则整体重解压。旧版把同一个 toolkit 解压进所有实现目录
+     * （naganpm 目录里装的其实是 benborla29），戳机制同时修复这类历史错装。
+     * 入口 shim 体积小且承载随版本发布的修复，每次部署都覆盖（见 {@link #overlayEntryShim}）。
+     */
     public static void deployToolkit(Path baseDir, String dbId, DbAdapter adapter) throws IOException {
-        String srcDb = adapter.toolkitSourceDbId();
-        String res = "toolkit/" + srcDb + "/" + adapter.toolkitFileName();
+        ImplRegistry reg = ImplRegistry.load(baseDir);
         for (McpServerOption opt : adapter.mcpServerOptions()) {
-            Path dest = ImplRegistry.implDir(baseDir, dbId, opt.id());
-            if (!isDeployed(dest)) {
-                extractOrCopy(null, res, dest);
+            ImplInfo info = reg.get(dbId, opt.id());
+            if (info != null && !"builtin".equals(info.source)) {
+                // 用户自行安装的实现（URL/GitHub 升级）不被内置资源覆盖
+                continue;
             }
-            for (String extra : adapter.extraToolkitDirResources()) {
-                String name = extra.substring(extra.lastIndexOf('/') + 1);
-                Path extraDest = dest.resolve(name);
-                if (!isDeployed(extraDest)) {
-                    extractOrCopy(null, extra, extraDest);
+            String res = adapter.toolkitResourceFor(opt);
+            Path dest = ImplRegistry.implDir(baseDir, dbId, opt.id());
+            Path stampFile = dest.resolve(BUILTIN_STAMP_FILE);
+            String stamp = res + "@" + packageStamp();
+            if (!stamp.equals(readStamp(stampFile))) {
+                if (resourceExists(res)) {
+                    ImplRegistry.deleteTree(dest);
+                    extractOrCopy(null, res, dest);
+                    Files.createDirectories(dest);
+                    Files.writeString(stampFile, stamp, StandardCharsets.UTF_8);
+                } else if (!isDeployed(dest)) {
+                    throw new IOException("缺少内置资源 " + res + "（或 " + res + "/），且未通过系统属性指定外部文件");
+                } else {
+                    System.out.println("[WARN] 缺少内置资源 " + res + "，保留现有实现目录 " + dest);
                 }
             }
+            overlayEntryShim(res, dest);
+        }
+    }
+
+    /** 内置实现目录的内容戳文件名（值为 {@code <资源路径>@<安装包指纹>}）。 */
+    public static final String BUILTIN_STAMP_FILE = ".dbmcp-builtin";
+
+    /** 安装包指纹：本 jar（dev 形态为 classes 目录）的最后修改时间，随每次构建/覆盖变化。 */
+    private static String packageStamp() {
+        try {
+            java.security.CodeSource src = Installer.class.getProtectionDomain().getCodeSource();
+            if (src != null && src.getLocation() != null) {
+                Path p = Path.of(src.getLocation().toURI());
+                if (Files.exists(p)) {
+                    return String.valueOf(Files.getLastModifiedTime(p).toMillis());
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return "dev";
+    }
+
+    private static String readStamp(Path stampFile) {
+        try {
+            return Files.isRegularFile(stampFile) ? Files.readString(stampFile, StandardCharsets.UTF_8).trim() : "";
+        } catch (IOException e) {
+            return "";
+        }
+    }
+
+    /** 资源是否存在（目录型或单文件型）。删除旧目录前的前置校验，避免资源缺失时误删。 */
+    private static boolean resourceExists(String resourcePath) {
+        ClassLoader cl = Installer.class.getClassLoader();
+        String dirRes = resourcePath.endsWith("/") ? resourcePath : resourcePath + "/";
+        return cl.getResource(dirRes) != null || cl.getResource(resourcePath) != null;
+    }
+
+    /**
+     * 入口 shim（{@code <资源>/build/index.js}）每次部署都覆盖：它体积小，却承载必须随版本落地的修复
+     * （如 Doris 的 MySQL 协议兼容补丁）。资源里没有该文件（Java JAR 型 toolkit）时静默跳过。
+     */
+    private static void overlayEntryShim(String resourceDir, Path dest) throws IOException {
+        String shim = resourceDir.endsWith("/") ? resourceDir + "build/index.js" : resourceDir + "/build/index.js";
+        try (InputStream in = Installer.class.getClassLoader().getResourceAsStream(shim)) {
+            if (in == null) {
+                return;
+            }
+            Path out = dest.resolve("build").resolve("index.js");
+            Files.createDirectories(out.getParent());
+            Files.copy(in, out, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 
@@ -183,9 +248,9 @@ public final class Installer {
     }
 
     /**
-     * 一次性磁盘布局迁移：旧版把 calllog.jsonl 直接放在 instance/&lt;env&gt;/ 下（假定单实现），
-     * 方案 B 后应落到 instance/&lt;env&gt;/&lt;mcpServer&gt;/calllog.jsonl。
-     * 幂等：源文件不存在或目标已存在则跳过；历史日志整体归属该连接的第一个实现。
+     * 一次性磁盘布局迁移：旧版把 calllog.jsonl / 连接配置（config.yaml、.env）直接放在
+     * instance/&lt;env&gt;/ 下（假定单实现），方案 B 后应落到 instance/&lt;env&gt;/&lt;mcpServer&gt;/ 内。
+     * 幂等：源文件不存在或目标已存在则跳过；历史日志与配置整体归属该连接的第一个实现。
      */
     public static void migrateProviderLayout(Path baseDir, Map<String, State.EnvInfo> envs) {
         if (envs == null || envs.isEmpty()) {
@@ -202,34 +267,40 @@ public final class Installer {
             }
             String dbId = e.getKey().substring(0, slash);
             String env = e.getKey().substring(slash + 1);
-            if (DbAdapters.get(dbId) == null) {
+            DbAdapter adapter = DbAdapters.get(dbId);
+            if (adapter == null) {
                 continue;
             }
-            Path legacy = envDir(baseDir, dbId, env).resolve("calllog.jsonl");
-            if (!Files.isRegularFile(legacy)) {
-                continue;
-            }
+            Path legacyDir = envDir(baseDir, dbId, env);
             String first = info.providers.keySet().iterator().next();
-            Path target = callLog(baseDir, dbId, env, first);
-            try {
-                Files.createDirectories(target.getParent());
-                if (Files.isRegularFile(target)) {
-                    // 目标已存在（已迁移过）：源文件只剩残留，尽力清理
-                    Files.deleteIfExists(legacy);
-                    continue;
-                }
-                try {
-                    Files.move(legacy, target);
-                } catch (IOException lockOrCrossDevice) {
-                    // 运行中的 tap 进程可能持有句柄：退化为复制，历史日志不丢
-                    Files.copy(legacy, target, StandardCopyOption.REPLACE_EXISTING);
-                    try {
-                        Files.deleteIfExists(legacy);
-                    } catch (IOException ignored2) {
-                    }
-                }
-            } catch (IOException ignored) {
+            moveLegacy(legacyDir.resolve("calllog.jsonl"), callLog(baseDir, dbId, env, first));
+            String cfgName = adapter.configFileName();
+            moveLegacy(legacyDir.resolve(cfgName), providerDir(baseDir, dbId, env, first).resolve(cfgName));
+        }
+    }
+
+    /** 旧位置 → 新位置；目标已存在则视为已迁移，仅清理源残留。 */
+    private static void moveLegacy(Path legacy, Path target) {
+        if (!Files.isRegularFile(legacy)) {
+            return;
+        }
+        try {
+            Files.createDirectories(target.getParent());
+            if (Files.isRegularFile(target)) {
+                Files.deleteIfExists(legacy);
+                return;
             }
+            try {
+                Files.move(legacy, target);
+            } catch (IOException lockOrCrossDevice) {
+                // 运行中的 tap 进程可能持有句柄：退化为复制，内容不丢
+                Files.copy(legacy, target, StandardCopyOption.REPLACE_EXISTING);
+                try {
+                    Files.deleteIfExists(legacy);
+                } catch (IOException ignored2) {
+                }
+            }
+        } catch (IOException ignored) {
         }
     }
 

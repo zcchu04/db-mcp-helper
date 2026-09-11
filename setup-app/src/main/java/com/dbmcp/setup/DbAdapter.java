@@ -90,11 +90,16 @@ public interface DbAdapter {
     }
 
     /**
-     * 除 toolkitFileName() 外还需解压的内置目录资源（相对 classpath，解压到 baseDir/&lt;id&gt;/toolkit/ 下）。
-     * 用于同一数据库类型内置多个 server 实现的场景；默认无。
+     * 某实现的内置 toolkit 资源目录（相对 classpath）。默认回退适配器级
+     * {@code toolkit/<srcDb>/<toolkitFileName>}；同一库内置多个 server 实现时，
+     * 由各 {@link McpServerOption} 自带资源目录，每个实现独立解压到
+     * {@code impls/<id>/<serverId>/}。
      */
-    default List<String> extraToolkitDirResources() {
-        return List.of();
+    default String toolkitResourceFor(McpServerOption opt) {
+        if (opt != null && opt.toolkitResource() != null && !opt.toolkitResource().isBlank()) {
+            return opt.toolkitResource();
+        }
+        return "toolkit/" + toolkitSourceDbId() + "/" + toolkitFileName();
     }
 
     /**

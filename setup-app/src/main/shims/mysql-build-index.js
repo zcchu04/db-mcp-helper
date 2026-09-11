@@ -21,6 +21,17 @@ if (process.env.DB_MCP_DORIS === '1') {
     mysql2.ConnectionConfig.getDefaultFlags = function(options) {
       return origGetDefaultFlags.call(this, options).filter(f => f !== 'CONNECT_ATTRS');
     };
+    // Doris 的 MySQL 兼容层只支持"点查"的预处理语句，其余 COM_STMT_PREPARE
+    // 一律回 "Only support prepare SelectStmt point query now"。
+    // 因此把 execute（二进制预处理协议）降级为 query（文本协议），
+    // 与 @benborla29 实现的行为对齐；MySQL 连接不受影响（不设 DB_MCP_DORIS）。
+    const promise = require('mysql2/promise');
+    for (const cls of [promise.PromisePool, promise.PromiseConnection, promise.PromisePoolConnection]) {
+      if (!cls || !cls.prototype || typeof cls.prototype.execute !== 'function') continue;
+      cls.prototype.execute = function(sql, values) {
+        return this.query(sql, values);
+      };
+    }
   } catch (e) {
     // patch 失败不阻断启动，仅 Doris 连接会受影响
   }

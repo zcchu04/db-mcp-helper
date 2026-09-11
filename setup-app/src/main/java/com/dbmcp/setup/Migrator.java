@@ -111,13 +111,14 @@ public final class Migrator {
         }
     }
 
-    /** 各 baseDir/<dbId>/toolkit/<file> → baseDir/impls/<dbId>/<serverId>/。 */
+    /** 各 baseDir/<dbId>/toolkit/<实现资源目录名> → baseDir/impls/<dbId>/<serverId>/。 */
     private static void migrateImpls(Path baseDir) throws IOException {
         for (DbAdapter adapter : DbAdapters.all()) {
             String dbId = adapter.id();
             for (McpServerOption opt : adapter.mcpServerOptions()) {
                 String serverId = opt.id();
-                Path legacy = Installer.dbDir(baseDir, dbId).resolve("toolkit").resolve(adapter.toolkitFileName());
+                Path legacy = Installer.dbDir(baseDir, dbId).resolve("toolkit")
+                        .resolve(resourceBaseName(adapter.toolkitResourceFor(opt)));
                 Path target = ImplRegistry.implDir(baseDir, dbId, serverId);
                 if (!Installer.isDeployed(legacy)) {
                     continue;
@@ -128,21 +129,14 @@ public final class Migrator {
                 Files.createDirectories(target);
                 copyTree(legacy, target);
             }
-            for (String extra : adapter.extraToolkitDirResources()) {
-                String name = extra.substring(extra.lastIndexOf('/') + 1);
-                Path legacyExtra = Installer.dbDir(baseDir, dbId).resolve("toolkit").resolve(name);
-                if (!Installer.isDeployed(legacyExtra)) {
-                    continue;
-                }
-                String primary = adapter.mcpServerOptions().isEmpty() ? "default" : adapter.mcpServerOptions().get(0).id();
-                Path targetExtra = ImplRegistry.implDir(baseDir, dbId, primary).resolve(name);
-                if (Installer.isDeployed(targetExtra)) {
-                    continue;
-                }
-                Files.createDirectories(targetExtra.getParent());
-                copyTree(legacyExtra, targetExtra);
-            }
         }
+    }
+
+    /** 取资源路径最后一段（目录名或文件名），即 v0.2 布局 <dbId>/toolkit/ 下的名字。 */
+    private static String resourceBaseName(String resourcePath) {
+        String p = resourcePath.endsWith("/") ? resourcePath.substring(0, resourcePath.length() - 1) : resourcePath;
+        int slash = p.lastIndexOf('/');
+        return slash >= 0 ? p.substring(slash + 1) : p;
     }
 
     private static void copyTree(Path src, Path dst) throws IOException {

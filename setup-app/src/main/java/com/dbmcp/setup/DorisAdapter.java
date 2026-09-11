@@ -43,11 +43,6 @@ public final class DorisAdapter implements DbAdapter {
     }
 
     @Override
-    public List<String> extraToolkitDirResources() {
-        return List.of("toolkit/mysql/" + MySqlAdapter.nagaDirName());
-    }
-
-    @Override
     public String toolkitSourceDbId() {
         return "mysql";
     }
@@ -95,13 +90,15 @@ public final class DorisAdapter implements DbAdapter {
                         "@benborla29/mcp-server-mysql (Node)",
                         "单工具 mysql_query 执行任意 SQL；mysql_insert/update/delete 为写能力开关（默认只读）",
                         TOOLS_BENBORLA,
-                        REQUIRED_BENBORLA),
+                        REQUIRED_BENBORLA,
+                        MySqlAdapter.benborlaResource()),
                 new McpServerOption(
                         MySqlAdapter.IMPL_NAGA,
                         "@naganpm/mysql-mcp-server (Node)",
                         "8 个细粒度工具：增删改查独立工具 + 表结构/库列表/连接测试；mysql_query 仅 SELECT",
                         TOOLS_NAGA,
-                        REQUIRED_NAGA));
+                        REQUIRED_NAGA,
+                        MySqlAdapter.nagaResource()));
     }
 
     @Override
@@ -158,10 +155,7 @@ public final class DorisAdapter implements DbAdapter {
         String java = Installer.resolveJava(baseDir);
         boolean win = System.getProperty("os.name", "").toLowerCase().contains("win");
         Path nodeExe = baseDir.resolve(Installer.RUNTIMES_DIR).resolve("node").resolve(win ? "node.exe" : "node");
-        Path implDir = ImplRegistry.implDir(baseDir, dbId, mcpServer);
-        Path serverEntry = MySqlAdapter.IMPL_NAGA.equals(mcpServer)
-                ? implDir.resolve("build").resolve("index.js")
-                : implDir.resolve("build").resolve("index.js");
+        Path serverEntry = ImplRegistry.implDir(baseDir, dbId, mcpServer).resolve("build").resolve("index.js");
         return List.of(
                 java, "-jar", baseDir.resolve("tap").resolve(Cfg.TAP_FILE_NAME).toString(),
                 "--log", Installer.callLog(baseDir, dbId, env, mcpServer).toString(), "--",
@@ -173,11 +167,10 @@ public final class DorisAdapter implements DbAdapter {
         return "mysql_query";
     }
 
+    /** 自检入参：与 MySQL 适配器同实现（benborla29 取 sql，naganpm 取 query）。 */
     @Override
     public JsonObject pingArguments(String mcpServer) {
-        JsonObject args = new JsonObject();
-        args.addProperty("sql", "SELECT 1");
-        return args;
+        return MySqlAdapter.mysqlQueryArguments(mcpServer);
     }
 
     @Override

@@ -163,14 +163,10 @@ public final class ImplRegistry {
         }
     }
 
-    /** 推断入口文件名。 */
+    /** 推断入口文件名：Java JAR 型即 toolkit 文件名，Node 型统一走桥接 shim build/index.js。 */
     private static String resolveEntryFile(DbAdapter adapter, String serverId) {
         if (adapter.runtimeKind() == DbAdapter.RuntimeKind.JAVA_JAR) {
             return adapter.toolkitFileName();
-        }
-        // NODE 实现：按 serverId 推断
-        if (adapter instanceof MySqlAdapter && MySqlAdapter.IMPL_NAGA.equals(serverId)) {
-            return "dist/index.js";
         }
         return "build/index.js";
     }
@@ -265,12 +261,15 @@ public final class ImplRegistry {
         }
     }
 
+    /** 递归删除目录：Files.walk 是父目录先行的前序，需倒序删除，否则非空目录直接报 DirectoryNotEmptyException。 */
     static void deleteTree(Path dir) throws IOException {
         if (!Files.exists(dir)) return;
+        java.util.List<Path> paths = new java.util.ArrayList<>();
         try (java.util.stream.Stream<Path> walk = Files.walk(dir)) {
-            for (Path p : (Iterable<Path>) walk::iterator) {
-                Files.deleteIfExists(p);
-            }
+            walk.forEach(paths::add);
+        }
+        for (int i = paths.size() - 1; i >= 0; i--) {
+            Files.deleteIfExists(paths.get(i));
         }
     }
 }
